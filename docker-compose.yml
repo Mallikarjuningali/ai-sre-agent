@@ -58,3 +58,20 @@ services:
       - ./monitoring/loki/loki-config.yml:/etc/loki/loki-config.yml
 
     restart: unless-stopped
+
+  promtail:
+    image: grafana/promtail:2.9.8
+    container_name: promtail
+
+    command:
+      - "-config.file=/etc/promtail/promtail-config.yml"
+
+    volumes:
+      - ./monitoring/promtail/promtail-config.yml:/etc/promtail/promtail-config.yml
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+    depends_on:
+      - loki
+
+    restart: unless-stopped

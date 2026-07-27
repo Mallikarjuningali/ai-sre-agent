@@ -12,6 +12,10 @@ venv/
 
 # Logs
 *.log
+logs/
+
+# Project output
+output/
 
 # OS files
 .DS_Store

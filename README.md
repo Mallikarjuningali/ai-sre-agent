@@ -1,4 +1,5 @@
-<img width="1536" height="1024" alt="ChatGPT Image Jul 31, 2026, 03_47_08 PM" src="https://github.com/user-attachments/assets/637308ae-e938-4989-95ad-2babb42ec6fa" />1. Project Title
+
+1. Project Title
 # 🤖 AI SRE Agent
 
 An AI-powered Site Reliability Engineering (SRE) platform that collects AWS infrastructure telemetry, analyzes operational health using Google Gemini, generates automated Root Cause Analysis (RCA), and presents actionable insights for cloud operations.
@@ -33,41 +34,12 @@ Example:
 
 
 4. Architecture Diagram
-<h2 align="center">System Architecture</h2>
+<img width="1536" height="1024" alt="ChatGPT Image Jul 31, 2026, 03_52_17 PM" src="https://github.com/user-attachments/assets/f6ba1b9f-c12d-4946-b590-0c74d2d454dc" />
 
-<p align="center">
-  <img src="assets/architecture.png" width="100%">
-</p>
-
-
-```
 5. Workflow
+<img width="1536" height="1024" alt="ChatGPT Image Jul 31, 2026, 03_47_08 PM" src="https://github.com/user-attachments/assets/637308ae-e938-4989-95ad-2babb42ec6fa" />
 
-Explain the pipeline.
 
-AWS
- │
- ▼
-Collectors
- │
- ▼
-Raw JSON
- │
- ▼
-Context Builder
- │
- ▼
-Prompt Builder
- │
- ▼
-Gemini AI
- │
- ▼
-AI Reports
- │
- ├── Logs
- ├── Summary
- └── Archive
 6. Folder Structure
 ai-sre-agent/
 │

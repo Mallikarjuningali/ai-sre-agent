@@ -36,33 +36,30 @@ Requirements
 # =========================================================
 # Import Required Libraries
 # =========================================================
-
 import json
-import boto3
 
-from datetime import datetime
-from datetime import timedelta
+from datetime import datetime, timedelta, UTC
 
+from utils.writer import write_json
+from utils.aws_clients import (
+    get_cloudwatch_client,
+    get_ec2_client
+)
+from utils.logger import get_logger
+from config.settings import METRIC_LOOKBACK_MINUTES
 # =========================================================
-# Create AWS Clients
-# =========================================================
-session = boto3.Session()
-
-region = session.region_name
-
-if region is None:
-    region = "us-east-1"   # Replace with your AWS region
-
-ec2 = session.client("ec2", region_name=region)
-cloudwatch = session.client("cloudwatch", region_name=region)
-# =========================================================
-# Time Configuration
+# Logger
 # =========================================================
 
-END_TIME = datetime.utcnow()
-START_TIME = END_TIME - timedelta(minutes=10)
+logger = get_logger(__name__)
 
-PERIOD = 300
+# =========================================================
+# AWS Clients
+# =========================================================
+
+ec2 = get_ec2_client()
+
+cloudwatch = get_cloudwatch_client()
 
 # =========================================================
 # Generic CloudWatch Metric Function
@@ -88,6 +85,8 @@ def get_metric(
     """
 
     try:
+        end_time = datetime.now(UTC)
+        start_time = end_time - timedelta(minutes=METRIC_LOOKBACK_MINUTES)
 
         response = cloudwatch.get_metric_statistics(
 
@@ -97,12 +96,9 @@ def get_metric(
 
             Dimensions=dimensions,
 
-            StartTime=START_TIME,
-
-            EndTime=END_TIME,
-
-            Period=PERIOD,
-
+            StartTime=start_time,
+            EndTime=end_time,
+            Period=300,
             Statistics=[statistic]
 
         )
@@ -443,7 +439,7 @@ def collect_cloudwatch_data():
 
     data = {
 
-        "Timestamp": datetime.utcnow().isoformat(),
+        "Timestamp": datetime.now(UTC).isoformat(),
 
         "Instances": [],
 
@@ -523,28 +519,18 @@ def print_report(data):
 # =========================================================
 # Save JSON Report
 # =========================================================
-
 def save_json(data):
 
-    filename = "output/cloudwatch_report.json"
+    write_json(
+        "cloudwatch.json",
+        {
+            "collector": "cloudwatch",
+            "timestamp": data["Timestamp"],
+            "resources": data["Instances"]
+        }
+    )
 
-    try:
-
-        with open(filename, "w") as file:
-
-            json.dump(
-                data,
-                file,
-                indent=4
-            )
-
-        print(f"\nJSON report saved to: {filename}")
-
-    except Exception as e:
-
-        print(f"\nUnable to save JSON report: {e}")
-
-
+    print("\nCloudWatch JSON report generated successfully.")
 # =========================================================
 # Main Function
 # =========================================================

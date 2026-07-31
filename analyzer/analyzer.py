@@ -1,0 +1,151 @@
+import json
+import time
+from pathlib import Path
+
+from context.context_builder import ContextBuilder
+from llm.prompt_builder import PromptBuilder
+from llm.llm_engine import LLMEngine
+from analyzer.report_writer import ReportWriter
+
+from utils.archive_manager import archive_current_run
+from utils.execution_summary import ExecutionSummary
+from utils.logger import get_logger
+
+from config.settings import (
+    MAX_RETRIES,
+    INITIAL_RETRY_DELAY,
+    REQUEST_DELAY
+)
+
+logger = get_logger("Analyzer")
+
+
+class Analyzer:
+
+    def __init__(self):
+
+        self.builder = ContextBuilder()
+        self.prompt = PromptBuilder()
+        self.llm = LLMEngine()
+        self.report = ReportWriter()
+
+    def run(self, context_file):
+
+        self.builder.run()
+
+        context = self.prompt.load_context(context_file)
+
+        prompt = self.prompt.build_prompt(context)
+
+        response = self.llm.analyze(prompt)
+
+        try:
+            report = json.loads(response)
+        except Exception:
+            report = {"raw_response": response}
+
+        instance_id = context["instance_id"]
+
+        self.report.save(instance_id, report)
+
+        return report
+
+    def run_all(self):
+
+        logger.info("====================================================")
+        logger.info("AI Analysis Started")
+        logger.info("====================================================")
+
+        summary = ExecutionSummary()
+
+        self.builder.run()
+
+        context_dir = Path("output/context")
+
+        context_files = sorted(context_dir.glob("*.json"))
+
+        summary.instances_discovered = len(context_files)
+
+        logger.info(f"Found {len(context_files)} context file(s)")
+
+        for context_file in context_files:
+
+            context = self.prompt.load_context(context_file.name)
+
+            prompt = self.prompt.build_prompt(context)
+
+            instance_id = context["instance_id"]
+
+            summary.instances_analyzed += 1
+
+            delay = INITIAL_RETRY_DELAY
+
+            success = False
+
+            for attempt in range(1, MAX_RETRIES + 1):
+
+                try:
+
+                    logger.info(
+                        f"Analyzing {instance_id} (Attempt {attempt}/{MAX_RETRIES})"
+                    )
+
+                    response = self.llm.analyze(prompt)
+
+                    try:
+                        report = json.loads(response)
+                    except Exception:
+                        report = {"raw_response": response}
+
+                    self.report.save(instance_id, report)
+
+                    summary.successful += 1
+                    summary.reports_generated += 1
+
+                    logger.info(
+                        f"Analysis completed successfully for {instance_id}"
+                    )
+
+                    success = True
+
+                    break
+
+                except Exception as e:
+
+                    logger.error(
+                        f"Attempt {attempt}/{MAX_RETRIES} failed for {instance_id}"
+                    )
+
+                    logger.exception(e)
+
+                    summary.retries += 1
+
+                    if attempt < MAX_RETRIES:
+
+                        logger.info(
+                            f"Retrying in {delay} seconds..."
+                        )
+
+                        time.sleep(delay)
+
+                        delay *= 2
+
+            if not success:
+
+                summary.failed += 1
+
+                logger.error(
+                    f"Skipping {instance_id} after {MAX_RETRIES} failed attempts."
+                )
+
+            time.sleep(REQUEST_DELAY)
+
+        logger.info("====================================================")
+        logger.info("AI Analysis Completed")
+        logger.info("====================================================")
+
+        summary.archive_created = True
+
+        summary.save()
+
+        archive_current_run()

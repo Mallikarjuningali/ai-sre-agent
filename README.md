@@ -376,7 +376,7 @@ Before running the AI SRE Agent, ensure the following software and services are 
 ## 1. Clone the Repository
 
 ```bash
-git clone https://github.com/<your-github-username>/ai-sre-agent.git
+git clone https://github.com/Mallikarjuningali/ai-sre-agent.git
 
 cd ai-sre-agent
 ```

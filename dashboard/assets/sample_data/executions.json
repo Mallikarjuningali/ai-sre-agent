@@ -1,0 +1,62 @@
+[
+  {
+    "run_id": "20260804_104500",
+    "type": "Full Investigation",
+    "status": "COMPLETED",
+    "execution_time": 272,
+    "successful": 150,
+    "failed": 6,
+    "resources": 156,
+    "start_time": "2026-08-04T10:45:00Z"
+  },
+  {
+    "run_id": "20260804_094500",
+    "type": "Full Investigation",
+    "status": "COMPLETED",
+    "execution_time": 198,
+    "successful": 140,
+    "failed": 2,
+    "resources": 142,
+    "start_time": "2026-08-04T09:45:00Z"
+  },
+  {
+    "run_id": "20260804_084500",
+    "type": "EC2 Investigation",
+    "status": "COMPLETED",
+    "execution_time": 45,
+    "successful": 1,
+    "failed": 0,
+    "resources": 1,
+    "start_time": "2026-08-04T08:45:00Z"
+  },
+  {
+    "run_id": "20260804_074500",
+    "type": "Full Investigation",
+    "status": "COMPLETED",
+    "execution_time": 179,
+    "successful": 123,
+    "failed": 5,
+    "resources": 128,
+    "start_time": "2026-08-04T07:45:00Z"
+  },
+  {
+    "run_id": "20260804_064500",
+    "type": "ALB Investigation",
+    "status": "COMPLETED_WITH_ERRORS",
+    "execution_time": 63,
+    "successful": 3,
+    "failed": 1,
+    "resources": 4,
+    "start_time": "2026-08-04T06:45:00Z"
+  },
+  {
+    "run_id": "20260803_224500",
+    "type": "Full Investigation",
+    "status": "FAILED",
+    "execution_time": 34,
+    "successful": 0,
+    "failed": 1,
+    "resources": 1,
+    "start_time": "2026-08-03T22:45:00Z"
+  }
+]

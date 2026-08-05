@@ -1,0 +1,81 @@
+{
+  "generated_at": "2026-08-04T10:45:20Z",
+  "kpis": {
+    "total_resources": { "value": 156, "delta": 12, "delta_label": "from yesterday" },
+    "critical_issues": { "value": 8, "delta": 3, "delta_label": "from yesterday" },
+    "high_severity": { "value": 15, "delta": -2, "delta_label": "from yesterday" },
+    "investigations": { "value": 24, "delta": 5, "delta_label": "from yesterday" },
+    "success_rate": { "value": 95.8, "delta": 2.3, "delta_label": "from yesterday" }
+  },
+  "infrastructure_health": {
+    "total": 156,
+    "healthy": 98,
+    "warning": 32,
+    "critical": 18,
+    "unknown": 8
+  },
+  "latest_execution": {
+    "run_id": "20260804_104500",
+    "status": "COMPLETED",
+    "resources": 156,
+    "successful": 150,
+    "failed": 6,
+    "duration_seconds": 272,
+    "start_time": "2026-08-04T10:45:00Z"
+  },
+  "incidents_by_severity_trend": [
+    { "date": "Jul 29", "critical": 8, "high": 10, "medium": 6, "low": 4 },
+    { "date": "Jul 30", "critical": 6, "high": 9, "medium": 7, "low": 5 },
+    { "date": "Jul 31", "critical": 5, "high": 8, "medium": 6, "low": 4 },
+    { "date": "Aug 1", "critical": 9, "high": 11, "medium": 8, "low": 6 },
+    { "date": "Aug 2", "critical": 12, "high": 10, "medium": 7, "low": 5 },
+    { "date": "Aug 3", "critical": 7, "high": 13, "medium": 9, "low": 7 },
+    { "date": "Aug 4", "critical": 8, "high": 15, "medium": 9, "low": 6 }
+  ],
+  "top_affected_resources": [
+    { "resource_id": "i-0a1b2c3d4e5f67890", "type": "EC2 Instance", "incidents": 6 },
+    { "resource_id": "app/my-alb/50dc6c4950c9188", "type": "Load Balancer", "incidents": 4 },
+    { "resource_id": "i-0b1c2d3e4f5a67891", "type": "EC2 Instance", "incidents": 3 },
+    { "resource_id": "asg/my-auto-scaling-group", "type": "Auto Scaling", "incidents": 2 },
+    { "resource_id": "db-prod-instance", "type": "RDS Instance", "incidents": 1 }
+  ],
+  "investigation_trend": [
+    { "date": "Jul 29", "count": 14 },
+    { "date": "Jul 30", "count": 16 },
+    { "date": "Jul 31", "count": 15 },
+    { "date": "Aug 1", "count": 18 },
+    { "date": "Aug 2", "count": 21 },
+    { "date": "Aug 3", "count": 17 },
+    { "date": "Aug 4", "count": 24 }
+  ],
+  "recent_investigations": [
+    {
+      "report_id": "i-0a1b2c3d4e5f67890",
+      "instance_id": "i-0a1b2c3d4e5f67890",
+      "severity": "CRITICAL",
+      "summary": "High CPU utilization and ALB 5xx errors",
+      "detected_at": "2026-08-04T10:57:00Z"
+    },
+    {
+      "report_id": "i-0b1c2d3e4f5a67891",
+      "instance_id": "i-0b1c2d3e4f5a67891",
+      "severity": "HIGH",
+      "summary": "Application timeout issues",
+      "detected_at": "2026-08-04T10:42:00Z"
+    },
+    {
+      "report_id": "asg-scale-latency-01",
+      "instance_id": "asg/my-auto-scaling-group",
+      "severity": "MEDIUM",
+      "summary": "Memory utilization high",
+      "detected_at": "2026-08-04T10:07:00Z"
+    },
+    {
+      "report_id": "db-prod-instance-01",
+      "instance_id": "db-prod-instance",
+      "severity": "LOW",
+      "summary": "Disk space running low",
+      "detected_at": "2026-08-04T09:07:00Z"
+    }
+  ]
+}

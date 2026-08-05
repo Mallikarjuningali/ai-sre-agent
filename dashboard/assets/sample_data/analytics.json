@@ -1,0 +1,43 @@
+{
+  "incident_trend": [
+    { "date": "Jul 29", "count": 28 },
+    { "date": "Jul 30", "count": 27 },
+    { "date": "Jul 31", "count": 23 },
+    { "date": "Aug 1", "count": 34 },
+    { "date": "Aug 2", "count": 34 },
+    { "date": "Aug 3", "count": 36 },
+    { "date": "Aug 4", "count": 38 }
+  ],
+  "severity_trend": [
+    { "date": "Jul 29", "critical": 8, "high": 10, "medium": 6, "low": 4 },
+    { "date": "Jul 30", "critical": 6, "high": 9, "medium": 7, "low": 5 },
+    { "date": "Jul 31", "critical": 5, "high": 8, "medium": 6, "low": 4 },
+    { "date": "Aug 1", "critical": 9, "high": 11, "medium": 8, "low": 6 },
+    { "date": "Aug 2", "critical": 12, "high": 10, "medium": 7, "low": 5 },
+    { "date": "Aug 3", "critical": 7, "high": 13, "medium": 9, "low": 7 },
+    { "date": "Aug 4", "critical": 8, "high": 15, "medium": 9, "low": 6 }
+  ],
+  "resource_distribution": [
+    { "type": "EC2 Instance", "count": 64 },
+    { "type": "RDS Instance", "count": 18 },
+    { "type": "Load Balancer", "count": 12 },
+    { "type": "Auto Scaling Group", "count": 9 },
+    { "type": "Lambda Function", "count": 31 },
+    { "type": "Other", "count": 22 }
+  ],
+  "collector_statistics": [
+    { "name": "CloudWatch", "events_processed": 128400, "errors": 2, "avg_latency_ms": 118 },
+    { "name": "CloudTrail", "events_processed": 84210, "errors": 0, "avg_latency_ms": 94 },
+    { "name": "ALB", "events_processed": 52310, "errors": 1, "avg_latency_ms": 76 },
+    { "name": "AutoScaling", "events_processed": 9840, "errors": 6, "avg_latency_ms": 205 }
+  ],
+  "execution_time_trend": [
+    { "date": "Jul 29", "avg_seconds": 231 },
+    { "date": "Jul 30", "avg_seconds": 219 },
+    { "date": "Jul 31", "avg_seconds": 224 },
+    { "date": "Aug 1", "avg_seconds": 246 },
+    { "date": "Aug 2", "avg_seconds": 238 },
+    { "date": "Aug 3", "avg_seconds": 252 },
+    { "date": "Aug 4", "avg_seconds": 214 }
+  ]
+}

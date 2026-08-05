@@ -8,6 +8,7 @@ from llm.llm_engine import LLMEngine
 from analyzer.report_writer import ReportWriter
 
 from utils.archive_manager import archive_current_run
+from utils.dashboard_export import export as export_dashboard_feed
 from utils.execution_summary import ExecutionSummary
 from utils.logger import get_logger
 
@@ -149,3 +150,9 @@ class Analyzer:
         summary.save()
 
         archive_current_run()
+
+        try:
+            export_dashboard_feed()
+        except Exception as e:
+            logger.error("Dashboard feed export failed; ai-sre-agent run itself completed.")
+            logger.exception(e)

@@ -1,0 +1,517 @@
+/* ==========================================================================
+   AegisOps AI — Enterprise Dark Theme
+   Design tokens + overrides that strip Streamlit's default chrome and
+   replace it with a Datadog/Grafana-style enterprise dashboard look.
+   ========================================================================== */
+
+:root {
+  --bg-app: #0a0d14;
+  --bg-sidebar: #0d1119;
+  --bg-surface: #10141d;
+  --bg-surface-hover: #141a25;
+  --bg-elevated: #161b26;
+  --border-subtle: rgba(255, 255, 255, 0.07);
+  --border-strong: rgba(255, 255, 255, 0.14);
+
+  --text-primary: #eef1f6;
+  --text-secondary: #9aa4b6;
+  --text-muted: #626d80;
+
+  --accent: #7c6cf6;
+  --accent-hover: #8f81f8;
+  --accent-soft: rgba(124, 108, 246, 0.14);
+  --accent-soft-border: rgba(124, 108, 246, 0.35);
+
+  --green: #22c55e;
+  --green-soft: rgba(34, 197, 94, 0.14);
+  --amber: #f59e0b;
+  --amber-soft: rgba(245, 158, 11, 0.14);
+  --orange: #f97316;
+  --orange-soft: rgba(249, 115, 22, 0.14);
+  --red: #ef4444;
+  --red-soft: rgba(239, 68, 68, 0.14);
+  --blue: #3b82f6;
+  --blue-soft: rgba(59, 130, 246, 0.14);
+  --gray: #8b93a3;
+  --gray-soft: rgba(139, 147, 163, 0.14);
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4), 0 1px 0 rgba(255, 255, 255, 0.02) inset;
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+/* -------------------------------------------------------------------- */
+/* Base                                                                  */
+/* -------------------------------------------------------------------- */
+
+html, body, [class*="css"] {
+  font-family: var(--font-sans) !important;
+}
+
+.stApp {
+  background: var(--bg-app);
+  color: var(--text-primary);
+}
+
+[data-testid="stAppViewContainer"] {
+  background: var(--bg-app);
+}
+
+[data-testid="stHeader"] {
+  background: transparent;
+  height: 0;
+}
+
+#MainMenu, footer, [data-testid="stToolbar"], [data-testid="stDecoration"],
+[data-testid="stStatusWidget"] {
+  visibility: hidden;
+  height: 0;
+  display: none;
+}
+
+[data-testid="stMainBlockContainer"] {
+  padding-top: 1.75rem;
+  padding-bottom: 2.5rem;
+  padding-left: 2.5rem;
+  padding-right: 2.5rem;
+  max-width: 1600px;
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #262c3a; border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: #323a4a; }
+
+* { scrollbar-color: #262c3a transparent; scrollbar-width: thin; }
+
+h1, h2, h3, h4, h5, h6 { color: var(--text-primary); font-weight: 600; letter-spacing: -0.01em; }
+p, span, label, div { color: var(--text-primary); }
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-hover); }
+
+hr { border-color: var(--border-subtle); }
+
+/* -------------------------------------------------------------------- */
+/* Sidebar                                                               */
+/* -------------------------------------------------------------------- */
+
+[data-testid="stSidebar"] {
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border-subtle);
+  min-width: 248px !important;
+  max-width: 248px !important;
+}
+
+[data-testid="stSidebar"] > div:first-child {
+  padding-top: 1.25rem;
+}
+
+[data-testid="stSidebarUserContent"] {
+  padding-top: 0;
+}
+
+.ao-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0.25rem 0.5rem 1.25rem 0.5rem;
+  margin-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.ao-brand-mark {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: linear-gradient(135deg, var(--accent), #4f46e5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 15px;
+  color: white;
+  flex-shrink: 0;
+}
+
+.ao-brand-text { line-height: 1.15; }
+.ao-brand-title { font-size: 15px; font-weight: 700; color: var(--text-primary); }
+.ao-brand-sub { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
+
+/* Sidebar nav buttons (st.button rendered as nav items) */
+[data-testid="stSidebar"] .stButton { margin-bottom: 2px; }
+
+[data-testid="stSidebar"] .stButton > button {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-secondary);
+  font-weight: 500;
+  font-size: 13.5px;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius-sm);
+  transition: background 0.12s ease, color 0.12s ease;
+  box-shadow: none;
+  justify-content: flex-start;
+}
+
+[data-testid="stSidebar"] .stButton > button:hover {
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
+  border-color: var(--border-subtle);
+}
+
+[data-testid="stSidebar"] .stButton > button:focus:not(:active) {
+  color: var(--text-primary);
+  box-shadow: none;
+}
+
+[data-testid="stSidebar"] .ao-nav-active .stButton > button {
+  background: var(--accent-soft);
+  color: #cfc9fb;
+  border: 1px solid var(--accent-soft-border);
+  font-weight: 600;
+}
+
+.ao-sidebar-footer {
+  margin-top: 1rem;
+  padding: 0.9rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.ao-sidebar-footer-title { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px; }
+.ao-status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; }
+.ao-version { font-size: 11px; color: var(--text-muted); margin-top: 10px; }
+
+/* -------------------------------------------------------------------- */
+/* Page header                                                           */
+/* -------------------------------------------------------------------- */
+
+.ao-page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.ao-page-title { font-size: 26px; font-weight: 700; color: var(--text-primary); margin: 0; }
+.ao-page-subtitle { font-size: 13.5px; color: var(--text-secondary); margin-top: 4px; }
+
+/* -------------------------------------------------------------------- */
+/* Cards / surfaces                                                      */
+/* -------------------------------------------------------------------- */
+
+/* Cards are real st.container(border=True) elements (see components/cards.py) so
+   that charts/tables/widgets genuinely nest inside them in the DOM. Style the
+   native Streamlit bordered-container wrapper to match the card look. */
+div[data-testid="stVerticalBlockBorderWrapper"] > div {
+  border: 1px solid var(--border-subtle) !important;
+  border-radius: var(--radius-md) !important;
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-card);
+  padding: 1.1rem 1.25rem !important;
+}
+
+div[data-testid="stVerticalBlockBorderWrapper"] > div > div[data-testid="stVerticalBlock"] {
+  gap: 0.65rem;
+}
+
+.ao-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 1.1rem 1.25rem;
+  box-shadow: var(--shadow-card);
+  height: 100%;
+}
+
+.ao-card-title {
+  font-size: 14.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.85rem;
+}
+
+.ao-card-title-tag { font-size: 11.5px; font-weight: 500; color: var(--text-muted); }
+
+/* KPI stat tile */
+.ao-kpi {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 1.1rem 1.25rem;
+  box-shadow: var(--shadow-card);
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+.ao-kpi:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+}
+
+.ao-kpi-row { display: flex; align-items: flex-start; justify-content: space-between; }
+.ao-kpi-label { font-size: 12.5px; color: var(--text-secondary); font-weight: 500; }
+.ao-kpi-value { font-size: 28px; font-weight: 700; color: var(--text-primary); margin-top: 6px; line-height: 1; }
+.ao-kpi-icon {
+  width: 38px; height: 38px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 17px; flex-shrink: 0;
+}
+.ao-kpi-delta { font-size: 12px; font-weight: 600; margin-top: 8px; display: flex; align-items: center; gap: 4px; }
+.ao-kpi-delta-up { color: var(--green); }
+.ao-kpi-delta-down { color: var(--red); }
+.ao-kpi-delta-flat { color: var(--text-muted); }
+
+/* -------------------------------------------------------------------- */
+/* Badges                                                                */
+/* -------------------------------------------------------------------- */
+
+.ao-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.ao-badge-critical { background: var(--red-soft); color: #fca5a5; }
+.ao-badge-high { background: var(--orange-soft); color: #fdba74; }
+.ao-badge-medium { background: var(--amber-soft); color: #fcd34d; }
+.ao-badge-low { background: var(--blue-soft); color: #93c5fd; }
+.ao-badge-healthy { background: var(--green-soft); color: #86efac; }
+.ao-badge-warning { background: var(--amber-soft); color: #fcd34d; }
+.ao-badge-completed { background: var(--green-soft); color: #86efac; }
+.ao-badge-running { background: var(--blue-soft); color: #93c5fd; }
+.ao-badge-failed { background: var(--red-soft); color: #fca5a5; }
+.ao-badge-neutral { background: var(--gray-soft); color: #cbd2de; }
+.ao-badge-new { background: var(--accent-soft); color: #c7bbfb; }
+
+.ao-status-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 500; color: var(--text-secondary); }
+.ao-status-pill .ao-dot { width: 7px; height: 7px; border-radius: 50%; }
+
+/* -------------------------------------------------------------------- */
+/* Lists (collector health, recent investigations)                      */
+/* -------------------------------------------------------------------- */
+
+.ao-list-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.55rem 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.ao-list-row:last-child { border-bottom: none; }
+
+.ao-list-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.ao-list-icon {
+  width: 30px; height: 30px; border-radius: 8px;
+  background: var(--bg-elevated); border: 1px solid var(--border-subtle);
+  display: flex; align-items: center; justify-content: center; font-size: 13px; flex-shrink: 0;
+}
+.ao-list-title { font-size: 13.5px; font-weight: 600; color: var(--text-primary); }
+.ao-list-subtitle { font-size: 12px; color: var(--text-muted); margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.ao-investigation-row { padding: 0.6rem 0; border-bottom: 1px solid var(--border-subtle); }
+.ao-investigation-row:last-child { border-bottom: none; }
+.ao-investigation-time { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+
+/* -------------------------------------------------------------------- */
+/* Tables                                                                */
+/* -------------------------------------------------------------------- */
+
+.ao-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.ao-table th {
+  text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--text-muted); font-weight: 600; padding: 0 0.75rem 0.6rem 0.75rem; border-bottom: 1px solid var(--border-subtle);
+}
+.ao-table td { padding: 0.65rem 0.75rem; border-bottom: 1px solid var(--border-subtle); color: var(--text-primary); vertical-align: middle; }
+.ao-table tr:last-child td { border-bottom: none; }
+.ao-table tr:hover td { background: var(--bg-surface-hover); }
+.ao-table .ao-mono { font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 12.5px; color: var(--text-secondary); }
+
+.ao-empty-state {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 2.5rem 1rem; color: var(--text-muted); text-align: center; gap: 6px;
+}
+.ao-empty-state .ao-empty-icon { font-size: 26px; opacity: 0.6; margin-bottom: 4px; }
+.ao-empty-state .ao-empty-title { font-size: 13.5px; font-weight: 600; color: var(--text-secondary); }
+.ao-empty-state .ao-empty-sub { font-size: 12px; }
+
+/* -------------------------------------------------------------------- */
+/* Streamlit widget skins                                                */
+/* -------------------------------------------------------------------- */
+
+/* Streamlit 1.60 renders text/select inputs via React Aria: a
+   data-testid="...RootElement" wrapper carries the visible background and
+   border (not the <input> itself), so both need overriding together. */
+[data-testid="stTextInput"] input,
+[data-testid="stTextArea"] textarea {
+  background: transparent !important;
+  color: var(--text-primary) !important;
+  font-size: 13.5px !important;
+}
+[data-testid="stTextInputRootElement"],
+[data-testid="stTextArea"] > div {
+  background: var(--bg-surface) !important;
+  border: 1px solid var(--border-subtle) !important;
+  border-radius: var(--radius-sm) !important;
+}
+[data-testid="stTextInputRootElement"]:focus-within,
+[data-testid="stTextArea"] > div:focus-within {
+  border-color: var(--accent-soft-border) !important;
+  box-shadow: 0 0 0 3px var(--accent-soft) !important;
+}
+
+/* Selectbox (React Aria ComboBox: .stSelectbox > ... [role="group"] > input) */
+div[data-testid="stSelectbox"] [role="group"] {
+  background: var(--bg-surface) !important;
+  border: 1px solid var(--border-subtle) !important;
+  border-radius: var(--radius-sm) !important;
+}
+div[data-testid="stSelectbox"] input {
+  background: transparent !important;
+  color: var(--text-primary) !important;
+  font-size: 13.5px !important;
+}
+div[data-testid="stSelectbox"] button svg { fill: var(--text-muted) !important; }
+
+/* Dropdown popover listbox is portaled near document root, outside .stApp,
+   but CSS custom properties on :root still reach it. */
+[role="listbox"] {
+  background: var(--bg-elevated) !important;
+  border: 1px solid var(--border-strong) !important;
+  border-radius: var(--radius-sm) !important;
+}
+[role="option"] { color: var(--text-primary) !important; }
+[role="option"][data-focused="true"] { background: var(--bg-surface-hover) !important; }
+[role="option"][aria-selected="true"] { background: var(--accent-soft) !important; color: #cfc9fb !important; }
+
+button[data-testid^="stBaseButton-"] {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  border-radius: var(--radius-sm);
+  font-weight: 500;
+  font-size: 13.5px;
+  padding: 0.45rem 1rem;
+  transition: all 0.12s ease;
+}
+button[data-testid^="stBaseButton-"]:hover {
+  border-color: var(--accent-soft-border);
+  color: var(--accent-hover);
+  background: var(--accent-soft);
+}
+
+/* Primary buttons: plain st.button(type="primary") gets kind="primary";
+   st.form_submit_button(type="primary") gets kind="primaryFormSubmit". */
+button[data-testid^="stBaseButton-primary"] {
+  background: var(--accent) !important;
+  border: 1px solid var(--accent) !important;
+  color: white !important;
+}
+button[data-testid^="stBaseButton-primary"]:hover { background: var(--accent-hover) !important; }
+
+[data-testid="stMetric"] {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 1rem 1.1rem;
+}
+[data-testid="stMetricLabel"] { color: var(--text-secondary) !important; font-size: 12.5px !important; }
+[data-testid="stMetricValue"] { color: var(--text-primary) !important; font-size: 26px !important; font-weight: 700 !important; }
+
+[data-testid="stDataFrame"] { border: 1px solid var(--border-subtle); border-radius: var(--radius-md); overflow: hidden; }
+
+[data-testid="stExpander"] {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+[data-testid="stExpander"] summary { font-size: 13.5px; font-weight: 600; color: var(--text-primary); }
+
+.stTabs [data-baseweb="tab-list"] { gap: 4px; border-bottom: 1px solid var(--border-subtle); }
+.stTabs [data-baseweb="tab"] {
+  color: var(--text-secondary); font-size: 13.5px; font-weight: 500; padding: 0.55rem 0.9rem;
+  background: transparent; border-radius: 0;
+}
+.stTabs [aria-selected="true"] { color: var(--text-primary) !important; border-bottom: 2px solid var(--accent) !important; }
+
+/* Slider (React Aria): [role="group"] > track-div > [fill-div, thumb-div, ...] */
+div[data-testid="stSlider"] [role="group"] > div > div:first-child {
+  background: var(--bg-elevated) !important;
+  background-image: none !important;
+  height: 4px !important;
+  border-radius: 999px !important;
+}
+div[data-testid="stSlider"] [role="group"] > div > div:nth-child(2) {
+  background: var(--accent) !important;
+  border: 2px solid var(--text-primary) !important;
+  box-shadow: none !important;
+}
+[data-testid="stSliderThumbValue"], [data-testid="stSliderTickBar"] { color: var(--text-secondary) !important; }
+
+div[data-testid="stProgressBarTrack"] {
+  background: var(--bg-elevated) !important;
+  border-radius: 999px !important;
+  overflow: hidden !important;
+}
+div[data-testid="stProgressBarTrack"] > div {
+  background: var(--accent) !important;
+  background-image: none !important;
+}
+
+[data-testid="stAlert"] { border-radius: var(--radius-md); border: 1px solid var(--border-subtle); }
+
+[data-testid="stToggle"] label { color: var(--text-secondary); }
+
+[data-testid="stForm"] {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 1.25rem;
+}
+
+/* Radio-styled segmented control (used for filters) */
+[data-testid="stRadio"] > div { gap: 0.4rem; }
+[data-testid="stRadio"] label {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  padding: 0.3rem 0.75rem;
+  border-radius: 999px;
+  font-size: 12.5px;
+}
+
+code { background: var(--bg-elevated) !important; color: #c4b5fd !important; border-radius: 4px; }
+
+/* Row-level "Open Report" style link (History page) */
+.ao-link-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--accent) !important;
+  padding: 3px 10px;
+  border: 1px solid var(--accent-soft-border);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  transition: all 0.12s ease;
+  white-space: nowrap;
+  text-decoration: none !important;
+}
+.ao-link-btn:hover { background: var(--accent); color: white !important; }

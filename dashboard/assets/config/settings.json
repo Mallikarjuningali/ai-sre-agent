@@ -1,0 +1,11 @@
+{
+  "data_source_type": "local",
+  "local_data_dir": "../output/dashboard_feed",
+  "s3_bucket": "",
+  "s3_prefix": "aegisops/",
+  "aws_region": "us-east-1",
+  "rest_base_url": "",
+  "rest_api_key": "",
+  "theme": "dark",
+  "refresh_interval_seconds": 30
+}

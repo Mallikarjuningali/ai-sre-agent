@@ -1,0 +1,6 @@
+{
+  "CloudWatch": "Healthy",
+  "CloudTrail": "Healthy",
+  "ALB": "Healthy",
+  "AutoScaling": "Degraded"
+}

@@ -1,0 +1,107 @@
+[
+  {
+    "report_id": "i-0a1b2c3d4e5f67890",
+    "run_id": "20260804_104500",
+    "instance_id": "i-0a1b2c3d4e5f67890",
+    "resource_type": "EC2 Instance",
+    "severity": "CRITICAL",
+    "summary": "High CPU utilization and ALB 5xx errors on i-0a1b2c3d4e5f67890",
+    "root_cause": "The Nginx reverse-proxy service on i-0a1b2c3d4e5f67890 stopped responding after an OOM kill at 10:37 UTC, causing the attached ALB target group to mark the instance unhealthy and return HTTP 502/504 to clients.",
+    "evidence": [
+      "CloudWatch: CPUUtilization on i-0a1b2c3d4e5f67890 sustained above 96% for 8 consecutive minutes (10:29–10:37 UTC).",
+      "CloudTrail: no configuration or deployment API calls recorded on this instance in the preceding 24 hours, ruling out a recent change.",
+      "ALB access logs: target_status_code 502/504 for 214 requests routed to i-0a1b2c3d4e5f67890 between 10:37–10:45 UTC.",
+      "System log (via CloudWatch Logs agent): 'Out of memory: Killed process 1842 (nginx)' recorded at 10:37:03 UTC."
+    ],
+    "recommendations": [
+      "Restart the Nginx service on i-0a1b2c3d4e5f67890 and confirm target group health returns to healthy.",
+      "Increase the instance type or add a swap volume to absorb short memory spikes.",
+      "Add a CloudWatch alarm on MemoryUtilization (via CWAgent) with a threshold below the OOM-kill point.",
+      "Review the Auto Scaling group's health-check grace period so a single OOM event triggers replacement sooner."
+    ],
+    "detected_at": "2026-08-04T10:57:00Z",
+    "ai_confidence": 0.93,
+    "resource_tree": {
+      "id": "app/my-alb/50dc6c4950c9188",
+      "type": "Load Balancer",
+      "status": "warning",
+      "children": [
+        {
+          "id": "tg/my-target-group/6df6c4950c918",
+          "type": "Target Group",
+          "status": "warning",
+          "children": [
+            { "id": "i-0a1b2c3d4e5f67890", "type": "EC2 Instance", "status": "critical", "children": [] },
+            { "id": "i-0b1c2d3e4f5a67891", "type": "EC2 Instance", "status": "healthy", "children": [] }
+          ]
+        },
+        {
+          "id": "asg/my-auto-scaling-group",
+          "type": "Auto Scaling Group",
+          "status": "healthy",
+          "children": []
+        }
+      ]
+    }
+  },
+  {
+    "report_id": "i-0b1c2d3e4f5a67891",
+    "run_id": "20260804_104500",
+    "instance_id": "i-0b1c2d3e4f5a67891",
+    "resource_type": "Load Balancer",
+    "severity": "HIGH",
+    "summary": "Application timeout issues on app/my-alb/50dc6c4950c9188",
+    "root_cause": "Target group latency increased after one member instance (i-0a1b2c3d4e5f67890) stopped responding, doubling average target_response_time for the remaining healthy targets.",
+    "evidence": [
+      "ALB CloudWatch metric TargetResponseTime p95 rose from 180ms to 1.4s between 10:35–10:50 UTC.",
+      "ALB access logs show 6 requests exceeding the 60s idle timeout during the same window."
+    ],
+    "recommendations": [
+      "No direct action required once the underlying EC2 instance (i-0a1b2c3d4e5f67890) is remediated.",
+      "Consider enabling ALB connection draining tuning to shed load from an unhealthy target faster."
+    ],
+    "detected_at": "2026-08-04T10:42:00Z",
+    "ai_confidence": 0.81,
+    "resource_tree": null
+  },
+  {
+    "report_id": "asg-scale-latency-01",
+    "run_id": "20260804_094500",
+    "instance_id": "asg/my-auto-scaling-group",
+    "resource_type": "Auto Scaling",
+    "severity": "MEDIUM",
+    "summary": "Memory utilization high across Auto Scaling group",
+    "root_cause": "A gradual memory leak in the application process caused average MemoryUtilization across the Auto Scaling group to climb from 54% to 82% over 6 hours, with no corresponding traffic increase.",
+    "evidence": [
+      "CloudWatch: group-average MemoryUtilization trending upward linearly since 04:00 UTC.",
+      "No scale-out events triggered because the configured scaling policy tracks CPU, not memory."
+    ],
+    "recommendations": [
+      "Add a memory-based scaling policy or scheduled restart to mitigate the leak short-term.",
+      "File an engineering ticket to profile and fix the underlying memory leak."
+    ],
+    "detected_at": "2026-08-04T10:07:00Z",
+    "ai_confidence": 0.74,
+    "resource_tree": null
+  },
+  {
+    "report_id": "db-prod-instance-01",
+    "run_id": "20260804_074500",
+    "instance_id": "db-prod-instance",
+    "resource_type": "RDS Instance",
+    "severity": "LOW",
+    "summary": "Disk space running low on db-prod-instance",
+    "root_cause": "Free storage space on db-prod-instance dropped below the 20% warning threshold due to unbounded growth of the slow query log.",
+    "evidence": [
+      "CloudWatch: FreeStorageSpace on db-prod-instance at 18.4% of allocated capacity.",
+      "CloudTrail: no recent storage-modifying API calls; growth attributed to log accumulation."
+    ],
+    "recommendations": [
+      "Rotate or disable the slow query log, or increase allocated storage.",
+      "Enable storage autoscaling on the RDS instance to prevent recurrence."
+    ],
+    "detected_at": "2026-08-04T09:07:00Z",
+    "ai_confidence": 0.88,
+    "resource_tree": null
+  }
+]

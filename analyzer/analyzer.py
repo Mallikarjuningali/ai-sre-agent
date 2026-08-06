@@ -173,12 +173,28 @@ class Analyzer:
 
         if on_progress:
             on_progress("PUBLISHING_DASHBOARD", 95)
+        logger.info("====================================================")
+        logger.info("Generating Dashboard Feed")
+        logger.info("====================================================")
 
         try:
+
             export_dashboard_feed()
+
+            logger.info(
+                "Dashboard feed generated successfully."
+            )
+
         except Exception as e:
-            logger.error("Dashboard feed export failed; ai-sre-agent run itself completed.")
+
+            logger.error(
+                "Dashboard feed generation failed."
+            )
+
             logger.exception(e)
 
         if on_progress:
             on_progress("PUBLISHING_DASHBOARD", 100)
+        logger.info("====================================================")
+        logger.info("AI Investigation Pipeline Finished")
+        logger.info("====================================================")

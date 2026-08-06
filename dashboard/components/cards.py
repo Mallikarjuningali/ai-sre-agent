@@ -59,13 +59,17 @@ def card_title(title: str, tag: str = "") -> None:
 
 
 @contextmanager
-def card():
+def card(key: str | None = None):
     """A bordered card panel. Use as `with card(): ...` so every child
     element (charts, tables, widgets) genuinely nests inside the card's
     DOM node — unlike a raw markdown '<div>' opened/closed across separate
-    st.markdown calls, which the browser silently auto-closes."""
-    key = f"ao_card_{next(_card_id_counter)}"
-    with st.container(border=True, key=key):
+    st.markdown calls, which the browser silently auto-closes.
+
+    Pass an explicit `key` when the card needs its own CSS hook (Streamlit
+    renders it as an `.st-key-<key>` class on the wrapper) — e.g. the
+    Investigation launcher's larger mode-selection cards."""
+    resolved_key = key or f"ao_card_{next(_card_id_counter)}"
+    with st.container(border=True, key=resolved_key):
         yield
 
 

@@ -30,34 +30,46 @@ class Analyzer:
         self.llm = LLMEngine()
         self.report = ReportWriter()
 
-    def run(self, context_file):
+    def run(self, context_file, on_progress=None):
+
+        if on_progress:
+            on_progress("BUILDING_CONTEXT", 15)
 
         self.builder.run()
 
         context = self.prompt.load_context(context_file)
 
+        instance_id = context["instance_id"]
+
+        if on_progress:
+            on_progress("RUNNING_AI_ANALYSIS", 45, instance_id)
+
         prompt = self.prompt.build_prompt(context)
 
         response = self.llm.analyze(prompt)
+
+        if on_progress:
+            on_progress("GENERATING_RCA", 80, instance_id)
 
         try:
             report = json.loads(response)
         except Exception:
             report = {"raw_response": response}
 
-        instance_id = context["instance_id"]
-
         self.report.save(instance_id, report)
 
         return report
 
-    def run_all(self):
+    def run_all(self, run_id=None, on_progress=None):
 
         logger.info("====================================================")
         logger.info("AI Analysis Started")
         logger.info("====================================================")
 
-        summary = ExecutionSummary()
+        summary = ExecutionSummary(run_id=run_id)
+
+        if on_progress:
+            on_progress("BUILDING_CONTEXT", 12)
 
         self.builder.run()
 
@@ -69,7 +81,9 @@ class Analyzer:
 
         logger.info(f"Found {len(context_files)} context file(s)")
 
-        for context_file in context_files:
+        total_files = len(context_files) or 1
+
+        for index, context_file in enumerate(context_files):
 
             context = self.prompt.load_context(context_file.name)
 
@@ -78,6 +92,9 @@ class Analyzer:
             instance_id = context["instance_id"]
 
             summary.instances_analyzed += 1
+
+            if on_progress:
+                on_progress("RUNNING_AI_ANALYSIS", 20 + int(60 * (index / total_files)), instance_id)
 
             delay = INITIAL_RETRY_DELAY
 
@@ -145,14 +162,23 @@ class Analyzer:
         logger.info("AI Analysis Completed")
         logger.info("====================================================")
 
+        if on_progress:
+            on_progress("GENERATING_RCA", 85)
+
         summary.archive_created = True
 
         summary.save()
 
         archive_current_run()
 
+        if on_progress:
+            on_progress("PUBLISHING_DASHBOARD", 95)
+
         try:
             export_dashboard_feed()
         except Exception as e:
             logger.error("Dashboard feed export failed; ai-sre-agent run itself completed.")
             logger.exception(e)
+
+        if on_progress:
+            on_progress("PUBLISHING_DASHBOARD", 100)

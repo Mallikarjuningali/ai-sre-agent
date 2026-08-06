@@ -6,13 +6,27 @@ import streamlit as st
 from ..badges import new_badge, severity_badge, status_badge
 from ..cards import card, card_title, empty_state
 from ..formatting import format_duration, format_number, format_datetime
+from ..investigation_launcher import render_launcher
 from ..resource_tree import render_resource_tree
 from ..topbar import page_header
 
 
 def render(services, config) -> None:
+    page_header("Investigation", "Launch a new AI investigation, or review a past execution's root cause analysis")
+
+    render_launcher(services, config)
+
+    st.markdown(
+        """
+        <div class="ao-section-header">
+          <div class="ao-section-header-title">Past Executions</div>
+          <div class="ao-section-header-subtitle">Browse a previous run and its AI-generated root cause analysis.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     executions = services.history.list_executions()
-    page_header("Investigation", "Deep dive into an execution and its AI-generated root cause analysis")
 
     if not executions:
         with card():

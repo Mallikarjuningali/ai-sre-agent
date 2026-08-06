@@ -23,7 +23,9 @@ os.makedirs(SUMMARY_DIR, exist_ok=True)
 
 class ExecutionSummary:
 
-    def __init__(self):
+    def __init__(self, run_id=None):
+
+        self.run_id = run_id
 
         self.start_time = datetime.now(
             ZoneInfo("Asia/Kolkata")
@@ -72,7 +74,7 @@ class ExecutionSummary:
         else:
             self.status = "SUCCESS"
 
-        timestamp = self.start_time.strftime(
+        timestamp = self.run_id or self.start_time.strftime(
             "%d-%m-%Y_%H-%M-%S"
         )
 

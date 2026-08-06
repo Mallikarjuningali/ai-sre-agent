@@ -363,6 +363,20 @@ def build_resource_distribution(contexts):
     return [{"type": t, "count": c} for t, c in sorted(counts.items(), key=lambda kv: kv[1], reverse=True)]
 
 
+def build_resources_json(contexts):
+    """Discovered resource inventory grouped by type (dashboard's resources.json
+    contract - backs the Investigation page's Single Resource picker). Every
+    instance_id/resource_type pair here is a real output/context/*.json file
+    the collectors already wrote; nothing is invented."""
+    grouped = {}
+    for instance_id, context in contexts.items():
+        resource_type = label_resource_type(context.get("resource_type")) or "Unknown"
+        grouped.setdefault(resource_type, []).append({"id": instance_id, "label": instance_id})
+    for entries in grouped.values():
+        entries.sort(key=lambda e: e["id"])
+    return grouped
+
+
 def build_investigation_trend(runs):
     return [
         {
@@ -496,6 +510,7 @@ def export():
     investigation_trend = build_investigation_trend(runs)
     resource_distribution = build_resource_distribution(contexts)
     execution_time_trend = build_execution_time_trend(runs)
+    resources_json = build_resources_json(contexts)
 
     collectors_json = build_collectors_json(runs)
     executions_json = build_executions_json(runs)
@@ -507,6 +522,7 @@ def export():
     atomic_write_json(FEED_DIR / "reports.json", reports_json)
     atomic_write_json(FEED_DIR / "summary.json", summary_json)
     atomic_write_json(FEED_DIR / "analytics.json", analytics_json)
+    atomic_write_json(FEED_DIR / "resources.json", resources_json)
     atomic_write_json(STATE_FILE, new_state)
 
 

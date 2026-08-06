@@ -18,6 +18,7 @@ dbus-python==1.4.0
 distro==1.9.0
 distro-info==1.15
 ec2-hibinit-agent==1.0.9
+fastapi==0.115.6
 httplib2==0.22.0
 hyperlink==21.0.0
 idna==3.11
@@ -80,6 +81,7 @@ uc-micro-py==1.0.3
 ufw==0.36.2
 unattended-upgrades==0.1
 urllib3==2.6.3
+uvicorn==0.34.0
 wadllib==2.0.0
 wheel==0.46.3
 zipp==3.23.0

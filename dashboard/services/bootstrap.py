@@ -8,7 +8,9 @@ from .collector_service import CollectorService
 from .config import AppConfig
 from .data_source import DataSource, get_data_source
 from .history_service import HistoryService
+from .investigation_service import InvestigationService, get_investigation_backend
 from .report_service import ReportService
+from .resource_service import ResourceService
 from .summary_service import SummaryService
 
 
@@ -20,6 +22,8 @@ class Services:
     history: HistoryService
     report: ReportService
     analytics: AnalyticsService
+    resource: ResourceService
+    investigation: InvestigationService
 
 
 def build_services(config: AppConfig) -> Services:
@@ -32,4 +36,6 @@ def build_services(config: AppConfig) -> Services:
         history=HistoryService(ds, ttl),
         report=ReportService(ds, ttl),
         analytics=AnalyticsService(ds, ttl),
+        resource=ResourceService(ds, ttl),
+        investigation=InvestigationService(get_investigation_backend(config)),
     )

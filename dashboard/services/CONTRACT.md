@@ -84,6 +84,27 @@ Investigation page's Resource Tree panel:
 }
 ```
 
+## `resources.json` — ResourceService (Investigation page launcher)
+
+Discovered AWS resource inventory, grouped by type. Backs the "Resource
+Type" / "Resource" dropdowns in the Single Resource Investigation launcher:
+
+```jsonc
+{
+  "EC2 Instance": [
+    { "id": "i-0123456789abcdef", "label": "Production-Web-01" }
+  ],
+  "Load Balancer": [
+    { "id": "app/prod-alb/50dc6c4950c9188", "label": "prod-alb" }
+  ]
+}
+```
+
+Keys are free-text resource type labels (shown verbatim in the Resource
+Type dropdown); each entry needs `id` (passed back as `resource_id` when
+starting an investigation), `label` is **optional** and falls back to `id`
+when absent.
+
 ## `analytics.json` — AnalyticsService (Analytics page)
 
 ```jsonc
@@ -95,6 +116,48 @@ Investigation page's Resource Tree panel:
   "execution_time_trend": [ { "date": "2026-04-28", "avg_seconds": 214 } ]
 }
 ```
+
+## Investigation actions — InvestigationService (Investigation page launcher)
+
+The only *write* paths in the dashboard. Unlike everything above, these are
+plain HTTP calls made directly by `services/investigation_service.py`, not
+reads through `DataSource` — only available when the configured data source
+is `rest` (see Settings page). Local/S3 mode surfaces a clear "connect a
+REST backend" message in the UI instead of faking a run.
+
+```
+POST /investigation/full
+  request:  {}
+  response: { "run_id": "20260806_143000", "status": "QUEUED", "started_at": "2026-08-06T14:30:00Z" }
+
+POST /investigation/resource
+  request:  { "resource_type": "EC2 Instance", "resource_id": "i-0123456789abcdef" }
+  response: { "run_id": "20260806_143000", "status": "QUEUED", "started_at": "2026-08-06T14:30:00Z" }
+
+GET /investigation/status/{run_id}
+  response: {
+    "run_id": "20260806_143000",
+    "status": "RUNNING",                        // QUEUED | RUNNING | COMPLETED | FAILED
+    "phase": "RUNNING_AI_ANALYSIS",
+    "phase_label": "Running AI Analysis",
+    "percent": 62,
+    "current_resource": "i-0a1b2c3d4e5f67890",
+    "elapsed_seconds": 145,
+    "remaining_seconds_estimate": 90,
+    "phases": [
+      { "key": "COLLECTING_METRICS",   "label": "Collecting Metrics",   "state": "done" },
+      { "key": "BUILDING_CONTEXT",     "label": "Building Context",     "state": "done" },
+      { "key": "RUNNING_AI_ANALYSIS",  "label": "Running AI Analysis",  "state": "active" },
+      { "key": "GENERATING_RCA",       "label": "Generating RCA",       "state": "pending" },
+      { "key": "PUBLISHING_DASHBOARD", "label": "Publishing Dashboard", "state": "pending" }
+    ]
+  }
+```
+
+`GET /investigation/status/{run_id}` should return `404` (client treats as
+`None`) until the run exists. On `COMPLETED`, the dashboard expects the run
+to also show up in `executions.json` / `reports.json` per the contracts
+above so the operator can jump straight to the report.
 
 ## Adding a new backend
 

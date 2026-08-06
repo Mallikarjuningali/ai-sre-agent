@@ -498,6 +498,152 @@ div[data-testid="stProgressBarTrack"] > div {
 
 code { background: var(--bg-elevated) !important; color: #c4b5fd !important; border-radius: 4px; }
 
+/* -------------------------------------------------------------------- */
+/* Investigation launcher — section headers                             */
+/* -------------------------------------------------------------------- */
+
+.ao-section-header { margin: 0.4rem 0 1rem 0; }
+.ao-section-header-title { font-size: 17px; font-weight: 700; color: var(--text-primary); letter-spacing: -0.01em; }
+.ao-section-header-subtitle { font-size: 13px; color: var(--text-secondary); margin-top: 3px; }
+
+/* -------------------------------------------------------------------- */
+/* Investigation launcher — mode selection cards                        */
+/* -------------------------------------------------------------------- */
+
+/* The two "Full Infrastructure" / "Single Resource" cards are the primary
+   action on the page, so they get more presence than a standard .ao-card:
+   larger padding, a stronger hover lift, and an accent-tinted border glow. */
+div[data-testid="stVerticalBlockBorderWrapper"].st-key-mode_card_full > div,
+div[data-testid="stVerticalBlockBorderWrapper"].st-key-mode_card_resource > div {
+  padding: 1.5rem 1.6rem !important;
+  border-radius: var(--radius-lg) !important;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+div[data-testid="stVerticalBlockBorderWrapper"].st-key-mode_card_full:hover > div,
+div[data-testid="stVerticalBlockBorderWrapper"].st-key-mode_card_resource:hover > div {
+  border-color: var(--accent-soft-border) !important;
+  box-shadow: 0 4px 24px rgba(124, 108, 246, 0.1), var(--shadow-card);
+  transform: translateY(-2px);
+}
+
+.ao-mode-card-header { display: flex; align-items: center; gap: 12px; margin-bottom: 0.9rem; }
+.ao-mode-icon {
+  width: 42px; height: 42px; border-radius: 11px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.ao-mode-icon-accent { background: var(--accent-soft); color: var(--accent-hover); }
+.ao-mode-icon-blue { background: var(--blue-soft); color: var(--blue); }
+.ao-mode-title { font-size: 17px; font-weight: 700; color: var(--text-primary); line-height: 1.25; }
+.ao-mode-tag {
+  font-size: 11px; font-weight: 600; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 0.05em; margin-top: 1px;
+}
+.ao-mode-desc { font-size: 13.5px; color: var(--text-secondary); line-height: 1.55; margin-bottom: 1.1rem; }
+
+.ao-mode-stats-row { display: flex; gap: 10px; margin-bottom: 1.1rem; }
+.ao-mode-stat {
+  flex: 1; min-width: 0;
+  background: var(--bg-elevated); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm); padding: 0.6rem 0.75rem;
+}
+.ao-mode-stat-label { font-size: 10.5px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.03em; }
+.ao-mode-stat-value { font-size: 14px; font-weight: 700; color: var(--text-primary); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.ao-mode-checklist-label { font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.5rem; }
+.ao-mode-checklist { display: flex; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 1.1rem; }
+.ao-mode-checklist-item { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--text-primary); }
+.ao-mode-checklist-item .ao-check { color: var(--green); font-weight: 700; font-size: 12px; }
+
+.ao-mode-warning {
+  display: flex; align-items: flex-start; gap: 8px;
+  background: var(--amber-soft); border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: var(--radius-sm); padding: 0.65rem 0.85rem;
+  font-size: 12.5px; color: #fcd34d; line-height: 1.45; margin-bottom: 1.1rem;
+}
+.ao-mode-warning svg { flex-shrink: 0; margin-top: 1px; }
+
+.ao-launch-error {
+  display: flex; align-items: center; gap: 8px;
+  background: var(--red-soft); border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: var(--radius-sm); padding: 0.65rem 0.9rem;
+  font-size: 12.5px; color: #fca5a5; margin-top: 0.9rem;
+}
+
+/* Mode-card buttons sit right under the content with no extra Streamlit
+   gap above them. */
+div[data-testid="stVerticalBlockBorderWrapper"].st-key-mode_card_full .stButton,
+div[data-testid="stVerticalBlockBorderWrapper"].st-key-mode_card_resource .stButton {
+  margin-top: 0.3rem;
+}
+
+/* -------------------------------------------------------------------- */
+/* Investigation launcher — running state / progress panel              */
+/* -------------------------------------------------------------------- */
+
+div[data-testid="stVerticalBlockBorderWrapper"].st-key-progress_panel > div {
+  padding: 1.5rem 1.7rem !important;
+  border-radius: var(--radius-lg) !important;
+  border-color: var(--accent-soft-border) !important;
+}
+
+.ao-progress-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.2rem; }
+.ao-progress-header-left { display: flex; align-items: center; gap: 12px; }
+.ao-progress-icon {
+  width: 38px; height: 38px; border-radius: 10px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg-elevated); border: 1px solid var(--border-subtle);
+}
+.ao-progress-title { font-size: 16px; font-weight: 700; color: var(--text-primary); }
+.ao-progress-subtitle { font-size: 12.5px; color: var(--text-secondary); margin-top: 2px; }
+
+.ao-pulse-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 0 rgba(124, 108, 246, 0.55);
+  animation: ao-pulse 1.6s ease-out infinite;
+}
+@keyframes ao-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(124, 108, 246, 0.55); }
+  70%  { box-shadow: 0 0 0 9px rgba(124, 108, 246, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(124, 108, 246, 0); }
+}
+
+.ao-progress-bar-row { display: flex; align-items: center; gap: 12px; }
+.ao-progress-bar-track {
+  flex: 1; height: 10px; border-radius: 999px; background: var(--bg-elevated);
+  overflow: hidden; position: relative;
+}
+.ao-progress-bar-fill {
+  height: 100%; border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent), #a78bfa);
+  background-size: 200% 100%;
+  transition: width 0.6s ease;
+  animation: ao-shimmer 2.2s linear infinite;
+}
+@keyframes ao-shimmer {
+  0%   { background-position: 0% 0; }
+  100% { background-position: -200% 0; }
+}
+.ao-progress-percent { font-size: 13px; font-weight: 700; color: var(--text-primary); min-width: 38px; text-align: right; }
+.ao-progress-phase-label { font-size: 12.5px; color: var(--text-secondary); margin-top: 0.6rem; margin-bottom: 1.2rem; }
+
+.ao-phase-stepper { display: flex; align-items: flex-start; margin-bottom: 0.4rem; }
+.ao-phase-step { display: flex; flex-direction: column; align-items: center; gap: 6px; flex: 0 0 auto; width: 84px; }
+.ao-phase-dot {
+  width: 26px; height: 26px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 700; color: var(--text-muted);
+  background: var(--bg-elevated); border: 2px solid var(--border-strong);
+  transition: all 0.2s ease;
+}
+.ao-phase-step-done .ao-phase-dot { background: var(--green); border-color: var(--green); color: #06280f; }
+.ao-phase-step-active .ao-phase-dot { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-hover); animation: ao-pulse 1.6s ease-out infinite; }
+.ao-phase-label { font-size: 10.5px; text-align: center; color: var(--text-muted); line-height: 1.3; }
+.ao-phase-step-done .ao-phase-label, .ao-phase-step-active .ao-phase-label { color: var(--text-secondary); font-weight: 600; }
+.ao-phase-connector { flex: 1 1 auto; height: 2px; background: var(--border-subtle); margin-top: 13px; min-width: 8px; }
+.ao-phase-connector-done { background: var(--green); }
+
 /* Row-level "Open Report" style link (History page) */
 .ao-link-btn {
   display: inline-flex;

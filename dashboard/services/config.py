@@ -14,6 +14,10 @@ import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 DASHBOARD_ROOT = Path(__file__).resolve().parent.parent
 SETTINGS_PATH = DASHBOARD_ROOT / "assets" / "config" / "settings.json"
 
@@ -80,7 +84,13 @@ def load_config() -> AppConfig:
         try:
             with SETTINGS_PATH.open("r") as f:
                 persisted = json.load(f)
-            values.update({k: v for k, v in persisted.items() if k in AppConfig.__dataclass_fields__})
+            # A blank value in the tracked settings file (the common case for
+            # rest_base_url/rest_api_key, which should never be committed
+            # with real values) must not clobber an env var that's actually set.
+            values.update({
+                k: v for k, v in persisted.items()
+                if k in AppConfig.__dataclass_fields__ and v != ""
+            })
         except (json.JSONDecodeError, OSError):
             pass
 

@@ -162,6 +162,18 @@ def _render_full_card(services) -> None:
         _start_full(services)
 
 
+def _resource_display_text(resource: dict) -> str:
+    """`label (id)` when label adds information, otherwise just `id` - keeps
+    the dropdown's own text (which st.selectbox already filters as you type)
+    from showing a redundant 'i-0123 · i-0123' when label is missing or
+    duplicates the id."""
+    resource_id = resource["id"]
+    label = resource.get("label")
+    if not label or label == resource_id:
+        return resource_id
+    return f"{label} ({resource_id})"
+
+
 def _render_resource_card(services) -> None:
     inventory = services.resource.get_inventory()
 
@@ -194,8 +206,14 @@ def _render_resource_card(services) -> None:
         st.selectbox("Resource", ["No resources discovered for this type"], key="launch_resource_empty", disabled=True)
         selected_resource = None
     else:
-        options = {f'{r["id"]} · {r.get("label", r["id"])}' if r.get("label") else r["id"]: r for r in resources}
-        selected_label = st.selectbox("Resource", list(options.keys()), key="launch_resource_id")
+        sorted_resources = sorted(resources, key=lambda r: _resource_display_text(r).lower())
+        options = {_resource_display_text(r): r for r in sorted_resources}
+        selected_label = st.selectbox(
+            "Resource",
+            list(options.keys()),
+            key="launch_resource_id",
+            placeholder="Search by ID or name…",
+        )
         selected_resource = options[selected_label]
 
     st.markdown(f'<div class="ao-mode-stats-row">{_mini_stat("Estimated Time", "30 sec – 2 min")}</div>', unsafe_allow_html=True)

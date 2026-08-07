@@ -7,6 +7,7 @@ from .analytics_service import AnalyticsService
 from .collector_service import CollectorService
 from .config import AppConfig
 from .data_source import DataSource, get_data_source
+from .execution_service import ExecutionService, get_execution_backend
 from .history_service import HistoryService
 from .investigation_service import InvestigationService, get_investigation_backend
 from .report_service import ReportService
@@ -24,6 +25,7 @@ class Services:
     analytics: AnalyticsService
     resource: ResourceService
     investigation: InvestigationService
+    execution: ExecutionService
 
 
 def build_services(config: AppConfig) -> Services:
@@ -38,4 +40,5 @@ def build_services(config: AppConfig) -> Services:
         analytics=AnalyticsService(ds, ttl),
         resource=ResourceService(ds, ttl),
         investigation=InvestigationService(get_investigation_backend(config)),
+        execution=ExecutionService(get_execution_backend(config)),
     )

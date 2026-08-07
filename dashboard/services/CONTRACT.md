@@ -159,6 +159,30 @@ GET /investigation/status/{run_id}
 to also show up in `executions.json` / `reports.json` per the contracts
 above so the operator can jump straight to the report.
 
+## Execution management — ExecutionService (History page)
+
+The other write path, made by `services/execution_service.py` the same way
+as Investigation actions above (REST-only; local/S3 surfaces a clear error
+instead of pretending to delete fixture data).
+
+```
+DELETE /executions
+  request:  { "run_ids": ["06-08-2026_15-23-12", "06-08-2026_18-40-02"] }
+  response: { "deleted": ["06-08-2026_15-23-12"], "not_found": ["06-08-2026_18-40-02"] }
+```
+
+Deletes each run's summary, archived snapshot, and any current report that
+still belongs to it (see `utils/execution_cleanup.py`), then republishes
+the dashboard feed once so `executions.json` / `reports.json` /
+`summary.json` / `analytics.json` / `collectors.json` reflect the change
+immediately - the dashboard doesn't need to wait for the next investigation
+to see it disappear.
+
+Returns `400` for an empty `run_ids` list, `409` if any requested `run_id`
+is currently `QUEUED`/`RUNNING` (a running investigation is never deleted),
+and `404` if none of the requested `run_ids` matched anything. A partial
+match (some deleted, some not found) is a `200` with both arrays populated.
+
 ## Adding a new backend
 
 Implement `DataSource` in `services/data_source.py` (see

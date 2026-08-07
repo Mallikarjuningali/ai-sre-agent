@@ -342,6 +342,7 @@ div[data-testid="stVerticalBlockBorderWrapper"] > div > div[data-testid="stVerti
 .ao-table td { padding: 0.65rem 0.75rem; border-bottom: 1px solid var(--border-subtle); color: var(--text-primary); vertical-align: middle; }
 .ao-table tr:last-child td { border-bottom: none; }
 .ao-table tr:hover td { background: var(--bg-surface-hover); }
+.ao-table tr.ao-row-selected td { background: var(--accent-soft); }
 .ao-table .ao-mono { font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 12.5px; color: var(--text-secondary); }
 
 .ao-empty-state {

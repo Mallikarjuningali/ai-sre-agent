@@ -16,6 +16,11 @@ Purpose:
     that utils/dashboard_export.py already wrote; they don't build or
     compute feed data themselves.
 
+    Also exposes DELETE /executions for the History page's "Delete
+    Selected" action (see utils/execution_cleanup.py for what actually gets
+    removed) - this is the one write path here that isn't about starting an
+    investigation.
+
     Reuses main.py's own Analyzer/collector entry points via
     InvestigationManager - no collection or analysis logic lives here.
 
@@ -38,6 +43,7 @@ from pydantic import BaseModel
 
 from api.investigation_manager import InvestigationBusyError, InvestigationManager
 from utils.dashboard_export import FEED_DIR, build_resources_json, load_current_contexts
+from utils.execution_cleanup import delete_executions
 
 app = FastAPI(title="AI SRE Agent API")
 
@@ -47,6 +53,10 @@ manager = InvestigationManager()
 class ResourceInvestigationRequest(BaseModel):
     resource_type: str
     resource_id: str
+
+
+class DeleteExecutionsRequest(BaseModel):
+    run_ids: list[str]
 
 
 @app.post("/investigation/full")
@@ -76,6 +86,27 @@ def get_investigation_status(run_id: str):
 @app.get("/resources")
 def get_resources():
     return build_resources_json(load_current_contexts())
+
+
+@app.delete("/executions")
+def delete_executions_endpoint(payload: DeleteExecutionsRequest):
+    if not payload.run_ids:
+        raise HTTPException(status_code=400, detail="run_ids must not be empty")
+
+    running = sorted(
+        run_id for run_id in payload.run_ids
+        if (status := manager.get_status(run_id)) and status.get("status") in ("QUEUED", "RUNNING")
+    )
+    if running:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot delete running investigation(s): {', '.join(running)}",
+        )
+
+    result = delete_executions(payload.run_ids)
+    if not result["deleted"]:
+        raise HTTPException(status_code=404, detail="No matching executions found to delete")
+    return result
 
 
 # -----------------------------------------------------------------------

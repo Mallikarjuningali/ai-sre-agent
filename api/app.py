@@ -33,6 +33,7 @@ Run (from the ai-sre-agent/ project root, same cwd main.py expects):
 import json
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from api.investigation_manager import InvestigationBusyError, InvestigationManager
@@ -89,6 +90,49 @@ def _read_feed_file(filename: str):
         raise HTTPException(status_code=404, detail=f"{filename} not found")
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
+
+
+# RestApiDataSource.exists() (dashboard/services/data_source.py) HEADs these
+# same paths before GETting them. FastAPI/Starlette's automatic "GET implies
+# HEAD" support runs the GET handler and does not strip its body, so a plain
+# @app.get route would send the full JSON payload on a HEAD request instead
+# of an empty one. These explicit HEAD routes are registered before the
+# matching GET route below so the router matches them first for HEAD
+# requests - see Starlette's Router.app(), which dispatches to the first
+# route whose (path, method) both match.
+
+def _feed_exists_status(filename: str) -> int:
+    return 200 if (FEED_DIR / filename).exists() else 404
+
+
+@app.head("/summary.json")
+def head_summary_feed():
+    return Response(status_code=_feed_exists_status("summary.json"), media_type="application/json")
+
+
+@app.head("/executions.json")
+def head_executions_feed():
+    return Response(status_code=_feed_exists_status("executions.json"), media_type="application/json")
+
+
+@app.head("/collectors.json")
+def head_collectors_feed():
+    return Response(status_code=_feed_exists_status("collectors.json"), media_type="application/json")
+
+
+@app.head("/reports.json")
+def head_reports_feed():
+    return Response(status_code=_feed_exists_status("reports.json"), media_type="application/json")
+
+
+@app.head("/analytics.json")
+def head_analytics_feed():
+    return Response(status_code=_feed_exists_status("analytics.json"), media_type="application/json")
+
+
+@app.head("/resources.json")
+def head_resources_feed():
+    return Response(status_code=_feed_exists_status("resources.json"), media_type="application/json")
 
 
 @app.get("/summary.json")

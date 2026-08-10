@@ -21,7 +21,9 @@ from utils.aws_clients import (
     get_cloudwatch_client
 )
 from utils.logger import get_logger
-from config.settings import METRIC_LOOKBACK_MINUTES
+from utils.metric_stats import build_metric_payload
+from utils.alarm_lookup import AlarmLookup
+from config.settings import METRIC_LOOKBACK_MINUTES, METRIC_TREND_LOOKBACK_MINUTES, METRIC_TREND_PERIOD_SECONDS
 # =========================================================
 # Configure Logger
 # =========================================================
@@ -238,6 +240,94 @@ def get_metric(
         )
 
         return 0
+
+
+# =========================================================
+# Generic CloudWatch Metric Statistics (trend-aware)
+# =========================================================
+# Only RequestCount, TargetResponseTime, HTTPCode_Target_4XX/5XX_Count and
+# Healthy/UnHealthyHostCount get trend stats, per the metrics this
+# collector is asked to track trends for - ProcessedBytes and the ELB-level
+# 4XX/5XX counts (get_elb_4xx/get_elb_5xx/get_processed_bytes below) keep
+# using get_metric() above, unchanged.
+
+def get_metric_datapoints(
+    namespace,
+    metric_name,
+    dimensions,
+    statistic="Sum"
+):
+    """Fetches the previous METRIC_TREND_LOOKBACK_MINUTES of a metric at
+    METRIC_TREND_PERIOD_SECONDS granularity. Exists only for this call -
+    only the statistical summary (get_metric_stats, below) is ever
+    persisted, same as every other collector value in output/raw/."""
+
+    try:
+        end_time = datetime.now(UTC)
+        start_time = end_time - timedelta(minutes=METRIC_TREND_LOOKBACK_MINUTES)
+
+        response = cloudwatch.get_metric_statistics(
+            Namespace=namespace,
+            MetricName=metric_name,
+            Dimensions=dimensions,
+            StartTime=start_time,
+            EndTime=end_time,
+            Period=METRIC_TREND_PERIOD_SECONDS,
+            Statistics=[statistic]
+        )
+
+        return [
+            {"timestamp": point["Timestamp"], "value": point[statistic]}
+            for point in response["Datapoints"]
+        ]
+
+    except Exception as e:
+
+        logger.error(f"{metric_name}: {str(e)}")
+
+        return []
+
+
+def get_metric_stats(
+    namespace,
+    metric_name,
+    dimensions,
+    alarm_lookup,
+    statistic="Sum",
+    unit="Count"
+):
+    """One CloudWatch call -> (latest_value, telemetry_payload).
+
+    latest_value is a plain rounded number (or None) - kept only for the
+    existing snapshot fields the raw record and dashboard_export.py
+    already depend on. build_metric_payload() returns {"U", "TH", "H"}
+    only - no interpreted or derived values, not even "latest".
+
+    TH is never hardcoded: alarm_lookup.find_threshold() is queried with
+    this exact same namespace/metric_name/dimensions used to fetch the
+    datapoints, and only returns a value when a real CloudWatch Alarm
+    matches it.
+
+    Both are None/None when there was no data in the window - callers
+    should degrade gracefully."""
+
+    datapoints = get_metric_datapoints(namespace, metric_name, dimensions, statistic)
+
+    if not datapoints:
+        return None, None
+
+    latest_point = max(datapoints, key=lambda point: point["timestamp"])
+
+    threshold = alarm_lookup.find_threshold(namespace, metric_name, dimensions)
+
+    payload = build_metric_payload(
+        datapoints,
+        unit=unit,
+        threshold_value=threshold["V"] if threshold else None,
+        threshold_operator=threshold["OP"] if threshold else None,
+    )
+
+    return round(latest_point["value"], 2), payload
 # =========================================================
 # Build ALB CloudWatch Dimensions
 # =========================================================
@@ -254,14 +344,16 @@ def build_alb_dimensions(lb_dimension):
 # Request Count
 # =========================================================
 
-def get_request_count(lb_dimension):
+def get_request_count_stats(lb_dimension, alarm_lookup):
 
-    return get_metric(
+    return get_metric_stats(
         namespace="AWS/ApplicationELB",
         metric_name="RequestCount",
         dimensions=build_alb_dimensions(
             lb_dimension
-        )
+        ),
+        alarm_lookup=alarm_lookup,
+        unit="Count"
     )
 # =========================================================
 # Processed Bytes
@@ -280,15 +372,17 @@ def get_processed_bytes(lb_dimension):
 # Target Response Time
 # =========================================================
 
-def get_target_response_time(lb_dimension):
+def get_target_response_time_stats(lb_dimension, alarm_lookup):
 
-    return get_metric(
+    return get_metric_stats(
         namespace="AWS/ApplicationELB",
         metric_name="TargetResponseTime",
         dimensions=build_alb_dimensions(
             lb_dimension
         ),
-        statistic="Average"
+        alarm_lookup=alarm_lookup,
+        statistic="Average",
+        unit="Seconds"
     )
 # =========================================================
 # ELB 4XX Errors
@@ -320,38 +414,43 @@ def get_elb_5xx(lb_dimension):
 # Target 4XX Errors
 # =========================================================
 
-def get_target_4xx(lb_dimension):
+def get_target_4xx_stats(lb_dimension, alarm_lookup):
 
-    return get_metric(
+    return get_metric_stats(
         namespace="AWS/ApplicationELB",
         metric_name="HTTPCode_Target_4XX_Count",
         dimensions=build_alb_dimensions(
             lb_dimension
-        )
+        ),
+        alarm_lookup=alarm_lookup,
+        unit="Count"
     )
 # =========================================================
 # Target 5XX Errors
 # =========================================================
 
-def get_target_5xx(lb_dimension):
+def get_target_5xx_stats(lb_dimension, alarm_lookup):
 
-    return get_metric(
+    return get_metric_stats(
         namespace="AWS/ApplicationELB",
         metric_name="HTTPCode_Target_5XX_Count",
         dimensions=build_alb_dimensions(
             lb_dimension
-        )
+        ),
+        alarm_lookup=alarm_lookup,
+        unit="Count"
     )
 # =========================================================
 # Healthy Host Count
 # =========================================================
 
-def get_healthy_host_count(
+def get_healthy_host_count_stats(
     lb_dimension,
-    tg_dimension
+    tg_dimension,
+    alarm_lookup
 ):
 
-    return get_metric(
+    return get_metric_stats(
         namespace="AWS/ApplicationELB",
         metric_name="HealthyHostCount",
         dimensions=[
@@ -364,18 +463,21 @@ def get_healthy_host_count(
                 "Value": tg_dimension
             }
         ],
-        statistic="Average"
+        alarm_lookup=alarm_lookup,
+        statistic="Average",
+        unit="Count"
     )
 # =========================================================
 # Unhealthy Host Count
 # =========================================================
 
-def get_unhealthy_host_count(
+def get_unhealthy_host_count_stats(
     lb_dimension,
-    tg_dimension
+    tg_dimension,
+    alarm_lookup
 ):
 
-    return get_metric(
+    return get_metric_stats(
         namespace="AWS/ApplicationELB",
         metric_name="UnHealthyHostCount",
         dimensions=[
@@ -388,7 +490,9 @@ def get_unhealthy_host_count(
                 "Value": tg_dimension
             }
         ],
-        statistic="Average"
+        alarm_lookup=alarm_lookup,
+        statistic="Average",
+        unit="Count"
     )# =========================================================
 # Main Function
 # =========================================================
@@ -402,6 +506,11 @@ def main():
     if not albs:
         print("No Application Load Balancers Found.")
         return
+
+    # One describe_alarms() call for this entire run - every metric below
+    # looks its threshold up against this same in-memory index instead of
+    # querying CloudWatch Alarms per metric.
+    alarm_lookup = AlarmLookup(cloudwatch)
 
     alb_output = []
 
@@ -419,13 +528,28 @@ def main():
             alb["LoadBalancerArn"]
         )
 
-        request_count = get_request_count(lb_dimension)
+        request_count, request_count_payload = get_request_count_stats(lb_dimension, alarm_lookup)
         processed_bytes = get_processed_bytes(lb_dimension)
-        response_time = get_target_response_time(lb_dimension)
+        response_time, response_time_payload = get_target_response_time_stats(lb_dimension, alarm_lookup)
         elb_4xx = get_elb_4xx(lb_dimension)
         elb_5xx = get_elb_5xx(lb_dimension)
-        target_4xx = get_target_4xx(lb_dimension)
-        target_5xx = get_target_5xx(lb_dimension)
+        target_4xx, target_4xx_payload = get_target_4xx_stats(lb_dimension, alarm_lookup)
+        target_5xx, target_5xx_payload = get_target_5xx_stats(lb_dimension, alarm_lookup)
+
+        request_count = request_count or 0
+        response_time = response_time or 0
+        target_4xx = target_4xx or 0
+        target_5xx = target_5xx or 0
+
+        alb_metric_trends = {}
+        for key, payload in (
+            ("RequestCount", request_count_payload),
+            ("TargetResponseTime", response_time_payload),
+            ("HTTPCode_Target_4XX_Count", target_4xx_payload),
+            ("HTTPCode_Target_5XX_Count", target_5xx_payload),
+        ):
+            if payload:
+                alb_metric_trends[key] = payload
 
         print("\nCloudWatch Metrics")
         print("-" * 70)
@@ -457,15 +581,28 @@ def main():
                 tg["TargetGroupArn"]
             )
 
-            healthy = get_healthy_host_count(
+            healthy, healthy_payload = get_healthy_host_count_stats(
                 lb_dimension,
-                tg_dimension
+                tg_dimension,
+                alarm_lookup
             )
 
-            unhealthy = get_unhealthy_host_count(
+            unhealthy, unhealthy_payload = get_unhealthy_host_count_stats(
                 lb_dimension,
-                tg_dimension
+                tg_dimension,
+                alarm_lookup
             )
+
+            healthy = healthy or 0
+            unhealthy = unhealthy or 0
+
+            tg_metric_trends = {}
+            for key, payload in (
+                ("HealthyHostCount", healthy_payload),
+                ("UnHealthyHostCount", unhealthy_payload),
+            ):
+                if payload:
+                    tg_metric_trends[key] = payload
 
             print(f"Healthy Hosts : {healthy}")
             print(f"Unhealthy     : {unhealthy}")
@@ -498,7 +635,9 @@ def main():
 
                 "unhealthy_hosts": unhealthy,
 
-                "targets": targets
+                "targets": targets,
+
+                "MetricTrends": tg_metric_trends,
 
             })
 
@@ -532,7 +671,9 @@ def main():
 
             },
 
-            "target_groups": tg_output
+            "target_groups": tg_output,
+
+            "MetricTrends": alb_metric_trends,
 
         })
 

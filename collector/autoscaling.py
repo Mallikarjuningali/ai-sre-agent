@@ -22,7 +22,9 @@ from utils.aws_clients import (
     get_cloudwatch_client
 )
 from utils.logger import get_logger
-from config.settings import METRIC_LOOKBACK_MINUTES
+from utils.metric_stats import build_metric_payload
+from utils.alarm_lookup import AlarmLookup
+from config.settings import METRIC_LOOKBACK_MINUTES, METRIC_TREND_LOOKBACK_MINUTES, METRIC_TREND_PERIOD_SECONDS
 # =========================================================
 # Logger
 # =========================================================
@@ -226,30 +228,139 @@ def get_metric(
 
 
 # =========================================================
+# Generic CloudWatch Metric Statistics (trend-aware)
+# =========================================================
+# Only Desired Capacity, InService and Pending Instances get trend stats,
+# per the metrics this collector is asked to track trends for -
+# Terminating/Total Instances (below) keep using get_metric() above,
+# unchanged. Scaling activities already carry their own recent-activity
+# list (discover_scaling_activities), reused as-is - no separate stats
+# needed there.
+
+ASG_NAMESPACE = "AWS/AutoScaling"
+
+
+def asg_dimensions(asg_name):
+    """The one place ASG CloudWatch dimensions are built - used both to
+    fetch datapoints and to look up a matching alarm, so the two can never
+    diverge."""
+
+    return [
+        {
+            "Name": "AutoScalingGroupName",
+            "Value": asg_name
+        }
+    ]
+
+
+def get_metric_datapoints(
+    metric_name,
+    asg_name,
+    statistic="Average"
+):
+    """Fetches the previous METRIC_TREND_LOOKBACK_MINUTES of a metric at
+    METRIC_TREND_PERIOD_SECONDS granularity. Exists only for this call -
+    only the statistical summary (get_metric_stats, below) is ever
+    persisted, same as every other collector value in output/raw/."""
+
+    try:
+        end_time = datetime.now(UTC)
+        start_time = end_time - timedelta(minutes=METRIC_TREND_LOOKBACK_MINUTES)
+
+        response = cloudwatch.get_metric_statistics(
+            Namespace=ASG_NAMESPACE,
+            MetricName=metric_name,
+            Dimensions=asg_dimensions(asg_name),
+            StartTime=start_time,
+            EndTime=end_time,
+            Period=METRIC_TREND_PERIOD_SECONDS,
+            Statistics=[statistic]
+        )
+
+        return [
+            {"timestamp": point["Timestamp"], "value": point[statistic]}
+            for point in response["Datapoints"]
+        ]
+
+    except Exception as e:
+
+        logger.error(f"{metric_name}: {str(e)}")
+
+        return []
+
+
+def get_metric_stats(
+    metric_name,
+    asg_name,
+    alarm_lookup,
+    statistic="Average",
+    unit="Count"
+):
+    """One CloudWatch call -> (latest_value, telemetry_payload).
+
+    latest_value is a plain rounded number (or None) - kept only for the
+    existing snapshot fields the raw record already depends on.
+    build_metric_payload() returns {"U", "TH", "H"} only - no interpreted
+    or derived values, not even "latest".
+
+    TH is never hardcoded: alarm_lookup.find_threshold() is queried with
+    the same ASG_NAMESPACE + asg_dimensions(asg_name) used to fetch the
+    datapoints, and only returns a value when a real CloudWatch Alarm
+    matches it.
+
+    Both are None/None when there was no data in the window - callers
+    should degrade gracefully."""
+
+    datapoints = get_metric_datapoints(metric_name, asg_name, statistic)
+
+    if not datapoints:
+        return None, None
+
+    latest_point = max(datapoints, key=lambda point: point["timestamp"])
+
+    threshold = alarm_lookup.find_threshold(ASG_NAMESPACE, metric_name, asg_dimensions(asg_name))
+
+    payload = build_metric_payload(
+        datapoints,
+        unit=unit,
+        threshold_value=threshold["V"] if threshold else None,
+        threshold_operator=threshold["OP"] if threshold else None,
+    )
+
+    return round(latest_point["value"], 2), payload
+
+
+# =========================================================
 # Auto Scaling Metrics
 # =========================================================
 
-def get_desired_capacity(asg_name):
+def get_desired_capacity_stats(asg_name, alarm_lookup):
 
-    return get_metric(
+    return get_metric_stats(
         "GroupDesiredCapacity",
-        asg_name
+        asg_name,
+        alarm_lookup=alarm_lookup,
+        unit="Count"
     )
 
 
-def get_inservice_instances(asg_name):
+def get_inservice_instances_stats(asg_name, alarm_lookup):
 
-    return get_metric(
+    return get_metric_stats(
         "GroupInServiceInstances",
-        asg_name
+        asg_name,
+        alarm_lookup=alarm_lookup,
+        unit="Count"
     )
 
 
-def get_pending_instances(asg_name):
+def get_pending_instances_stats(asg_name, alarm_lookup):
 
-    return get_metric(
+    return get_metric_stats(
         "GroupPendingInstances",
-        asg_name
+        asg_name,
+        alarm_lookup=alarm_lookup,
+        unit="Count"
     )
 
 
@@ -284,6 +395,11 @@ def main():
 
         return
 
+    # One describe_alarms() call for this entire run - every metric below
+    # looks its threshold up against this same in-memory index instead of
+    # querying CloudWatch Alarms per metric.
+    alarm_lookup = AlarmLookup(cloudwatch)
+
     asg_output = []
 
     for asg in asgs:
@@ -307,16 +423,19 @@ def main():
         print("\nCloudWatch Metrics")
         print("-" * 70)
 
-        desired = get_desired_capacity(
-            asg["AutoScalingGroupName"]
+        desired, desired_payload = get_desired_capacity_stats(
+            asg["AutoScalingGroupName"],
+            alarm_lookup
         )
 
-        inservice = get_inservice_instances(
-            asg["AutoScalingGroupName"]
+        inservice, inservice_payload = get_inservice_instances_stats(
+            asg["AutoScalingGroupName"],
+            alarm_lookup
         )
 
-        pending = get_pending_instances(
-            asg["AutoScalingGroupName"]
+        pending, pending_payload = get_pending_instances_stats(
+            asg["AutoScalingGroupName"],
+            alarm_lookup
         )
 
         terminating = get_terminating_instances(
@@ -326,6 +445,19 @@ def main():
         total = get_total_instances(
             asg["AutoScalingGroupName"]
         )
+
+        desired = desired or 0
+        inservice = inservice or 0
+        pending = pending or 0
+
+        asg_metric_trends = {}
+        for key, payload in (
+            ("DesiredCapacity", desired_payload),
+            ("InServiceInstances", inservice_payload),
+            ("PendingInstances", pending_payload),
+        ):
+            if payload:
+                asg_metric_trends[key] = payload
 
         print(f"Desired Capacity : {desired}")
         print(f"In Service       : {inservice}")
@@ -477,7 +609,9 @@ def main():
 
             "scaling_policies": policy_list,
 
-            "scaling_activities": activity_list
+            "scaling_activities": activity_list,
+
+            "MetricTrends": asg_metric_trends,
 
         })
 

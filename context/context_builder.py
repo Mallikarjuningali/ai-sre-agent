@@ -257,6 +257,7 @@ class ContextBuilder:
                 "vpc_id": None,
                 "metrics": {},
                 "target_groups": [],
+                "MetricTrends": {},
             }
 
         if resource_type == "Auto Scaling Group":
@@ -272,6 +273,7 @@ class ContextBuilder:
                 "instances": [],
                 "scaling_policies": [],
                 "scaling_activities": [],
+                "MetricTrends": {},
             }
 
         # Default: EC2 instance.
@@ -381,6 +383,7 @@ class ContextBuilder:
             entry["state"] = load_balancer.get("state")
             entry["vpc_id"] = load_balancer.get("vpc_id")
             entry["metrics"] = load_balancer.get("metrics", {})
+            entry["MetricTrends"] = load_balancer.get("MetricTrends", {})
             entry["target_groups"] = [
                 {
                     "target_group_name": tg.get("target_group_name"),
@@ -390,6 +393,7 @@ class ContextBuilder:
                     "healthy_hosts": tg.get("healthy_hosts"),
                     "unhealthy_hosts": tg.get("unhealthy_hosts"),
                     "targets": tg.get("targets", []),
+                    "MetricTrends": tg.get("MetricTrends", {}),
                 }
                 for tg in load_balancer.get("target_groups", [])
             ]
@@ -456,6 +460,7 @@ class ContextBuilder:
             entry["instances"] = asg.get("instances", [])
             entry["scaling_policies"] = asg.get("scaling_policies", [])
             entry["scaling_activities"] = asg.get("scaling_activities", [])
+            entry["MetricTrends"] = asg.get("MetricTrends", {})
 
         logger.info("Auto Scaling Groups promoted to first-class resources.")
 

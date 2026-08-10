@@ -15,6 +15,15 @@ REGION = "us-east-1"
 # CloudWatch Time Window
 
 METRIC_LOOKBACK_MINUTES = 10
+
+# Trend window for the CPU/Memory/Disk/Network/ALB/ASG metric statistics
+# fed to Gemini (see utils/metric_stats.py) - deliberately separate from
+# METRIC_LOOKBACK_MINUTES above, which CloudTrail's event lookback also
+# depends on and which must not change.
+
+METRIC_TREND_LOOKBACK_MINUTES = 60
+
+METRIC_TREND_PERIOD_SECONDS = 300
 # =========================================================
 # Gemini AI Configuration
 # =========================================================

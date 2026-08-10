@@ -292,38 +292,99 @@ def _metric_text(value, suffix: str = "%") -> str:
     return str(value)
 
 
+def _render_kpi_row(cols, fields) -> None:
+    for col, (label, value) in zip(cols, fields):
+        with col:
+            st.markdown(f'<div class="ao-kpi-label">{label}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div style="font-size:14px; font-weight:600; margin-top:2px;">{value}</div>', unsafe_allow_html=True)
+
+
 def _render_telemetry_card(report: dict) -> None:
     with card():
         card_title("Telemetry")
         telemetry = report.get("telemetry")
         if not telemetry:
-            empty_state("No telemetry captured", "This report predates telemetry tracking, or CloudWatch data was unavailable", "📉")
+            empty_state("No telemetry captured", "This report predates telemetry tracking, or the underlying data was unavailable", "📉")
             return
 
-        row1 = st.columns(4)
-        row1_fields = [
-            ("State", str(telemetry.get("state") or "—").title()),
-            ("CPU", _metric_text(telemetry.get("cpu"))),
-            ("Memory", _metric_text(telemetry.get("memory"))),
-            ("Disk", _metric_text(telemetry.get("disk"))),
-        ]
-        for col, (label, value) in zip(row1, row1_fields):
-            with col:
-                st.markdown(f'<div class="ao-kpi-label">{label}</div>', unsafe_allow_html=True)
-                st.markdown(f'<div style="font-size:14px; font-weight:600; margin-top:2px;">{value}</div>', unsafe_allow_html=True)
+        # report["resource_type"] here is already the *labeled* value
+        # dashboard_export.py's label_resource_type() produces - "EC2
+        # Instance" for EC2 (not "EC2"), "Load Balancer" and "Auto Scaling
+        # Group" pass through unchanged - matching utils/dashboard_export.py's
+        # build_telemetry() field shapes for each type exactly.
+        resource_type = report.get("resource_type")
 
-        st.markdown("<div style='height:0.7rem'></div>", unsafe_allow_html=True)
+        if resource_type == "Load Balancer":
+            _render_load_balancer_telemetry(telemetry)
+        elif resource_type == "Auto Scaling Group":
+            _render_auto_scaling_group_telemetry(telemetry)
+        else:
+            _render_ec2_telemetry(telemetry)
 
-        row2 = st.columns(3)
-        row2_fields = [
-            ("Network In", format_number(telemetry.get("network_in"))),
-            ("Network Out", format_number(telemetry.get("network_out"))),
-            ("Status Check", telemetry.get("status_check") or "—"),
-        ]
-        for col, (label, value) in zip(row2, row2_fields):
-            with col:
-                st.markdown(f'<div class="ao-kpi-label">{label}</div>', unsafe_allow_html=True)
-                st.markdown(f'<div style="font-size:14px; font-weight:600; margin-top:2px;">{value}</div>', unsafe_allow_html=True)
+
+def _render_ec2_telemetry(telemetry: dict) -> None:
+    row1 = st.columns(4)
+    row1_fields = [
+        ("State", str(telemetry.get("state") or "—").title()),
+        ("CPU", _metric_text(telemetry.get("cpu"))),
+        ("Memory", _metric_text(telemetry.get("memory"))),
+        ("Disk", _metric_text(telemetry.get("disk"))),
+    ]
+    _render_kpi_row(row1, row1_fields)
+
+    st.markdown("<div style='height:0.7rem'></div>", unsafe_allow_html=True)
+
+    row2 = st.columns(3)
+    row2_fields = [
+        ("Network In", format_number(telemetry.get("network_in"))),
+        ("Network Out", format_number(telemetry.get("network_out"))),
+        ("Status Check", telemetry.get("status_check") or "—"),
+    ]
+    _render_kpi_row(row2, row2_fields)
+
+
+def _render_load_balancer_telemetry(telemetry: dict) -> None:
+    row1 = st.columns(3)
+    row1_fields = [
+        ("Request Count", format_number(telemetry.get("request_count"))),
+        ("Target Response Time", _metric_text(telemetry.get("target_response_time"), suffix="s")),
+        ("Healthy Targets", format_number(telemetry.get("healthy_targets"))),
+    ]
+    _render_kpi_row(row1, row1_fields)
+
+    st.markdown("<div style='height:0.7rem'></div>", unsafe_allow_html=True)
+
+    row2 = st.columns(3)
+    row2_fields = [
+        ("Unhealthy Targets", format_number(telemetry.get("unhealthy_targets"))),
+        ("HTTP 4XX", format_number(telemetry.get("http_4xx"))),
+        ("HTTP 5XX", format_number(telemetry.get("http_5xx"))),
+    ]
+    _render_kpi_row(row2, row2_fields)
+
+
+def _render_auto_scaling_group_telemetry(telemetry: dict) -> None:
+    row1 = st.columns(4)
+    row1_fields = [
+        ("Desired Capacity", format_number(telemetry.get("desired_capacity"))),
+        ("In Service", format_number(telemetry.get("in_service_instances"))),
+        ("Pending", format_number(telemetry.get("pending_instances"))),
+        ("Standby", format_number(telemetry.get("standby_instances"))),
+    ]
+    _render_kpi_row(row1, row1_fields)
+
+    scaling_activities = telemetry.get("scaling_activities") or []
+    if scaling_activities:
+        st.markdown("<div style='height:0.9rem'></div>", unsafe_allow_html=True)
+        st.markdown('<div class="ao-kpi-label" style="margin-bottom:0.4rem;">Recent Scaling Activities</div>', unsafe_allow_html=True)
+        items_html = "".join(
+            f'<div style="display:flex; gap:9px; padding:0.4rem 0; border-bottom:1px solid var(--border-subtle);">'
+            f'<span style="color:var(--text-muted); font-size:12px; margin-top:2px;">▸</span>'
+            f'<span style="font-size:13px; color:var(--text-primary); line-height:1.45;">'
+            f'<strong>{activity.get("status") or "—"}</strong> — {activity.get("description") or "No description"}</span></div>'
+            for activity in scaling_activities[:5]
+        )
+        st.markdown(items_html, unsafe_allow_html=True)
 
 
 def _render_confidence_card(report: dict) -> None:

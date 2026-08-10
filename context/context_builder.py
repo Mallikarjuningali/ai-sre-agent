@@ -226,28 +226,63 @@ class ContextBuilder:
 # Add Resource
 # =====================================================
 
-    def add_resource(self, instance_id: str) -> None:
+    def add_resource(self, resource_id: str, resource_type: str = "EC2") -> None:
         """
         Add a resource to the resource index.
 
-        If the resource already exists,
-        nothing will be changed.
+        If the resource already exists, nothing will be changed.
+
+        resource_type distinguishes EC2 instances (enriched piecemeal by the
+        cloudwatch/alb/autoscaling/cloudtrail merges below) from first-class
+        Load Balancer / Auto Scaling Group resources, which carry their own
+        dedicated shape - see _default_entry().
         """
 
-        if instance_id not in self.resource_index:
+        if resource_id not in self.resource_index:
 
-            self.resource_index[instance_id] = {
+            self.resource_index[resource_id] = self._default_entry(resource_type)
 
+    def _default_entry(self, resource_type: str) -> Dict[str, Any]:
+        """The initial shape for a new resource_index entry, per resource
+        type. Kept as a single source of truth so add_resource() never
+        silently produces a mismatched shape."""
+
+        if resource_type == "Load Balancer":
+            return {
+                "resource_type": resource_type,
+                "alb_name": None,
+                "dns_name": None,
+                "scheme": None,
+                "state": None,
+                "vpc_id": None,
+                "metrics": {},
+                "target_groups": [],
+            }
+
+        if resource_type == "Auto Scaling Group":
+            return {
+                "resource_type": resource_type,
+                "asg_name": None,
+                "min_size": None,
+                "max_size": None,
+                "desired_capacity": None,
+                "health_check_type": None,
+                "availability_zones": [],
+                "metrics": {},
+                "instances": [],
+                "scaling_policies": [],
+                "scaling_activities": [],
+            }
+
+        # Default: EC2 instance.
+        return {
             "resource_type": "EC2",
-
             "cloudwatch": None,
-
             "alb": None,
-
             "autoscaling": None,
-
             "cloudtrail": []
         }
+
     # =====================================================
     # Build Resource Index
     # =====================================================
@@ -321,6 +356,46 @@ class ContextBuilder:
                     }
 
         logger.info("ALB data merged successfully.")
+
+        # -------------------------------------------------
+        # Promote each ALB to its own first-class resource
+        # (the loop above only ever used ALB data to enrich the
+        # EC2 instances behind it - this is what makes the ALB
+        # itself show up as "Load Balancer" in resources.json).
+        # -------------------------------------------------
+
+        for load_balancer in alb.get("resources", []):
+
+            alb_name = load_balancer.get("alb_name")
+
+            if not alb_name:
+                continue
+
+            self.add_resource(alb_name, resource_type="Load Balancer")
+
+            entry = self.resource_index[alb_name]
+
+            entry["alb_name"] = alb_name
+            entry["dns_name"] = load_balancer.get("dns_name")
+            entry["scheme"] = load_balancer.get("scheme")
+            entry["state"] = load_balancer.get("state")
+            entry["vpc_id"] = load_balancer.get("vpc_id")
+            entry["metrics"] = load_balancer.get("metrics", {})
+            entry["target_groups"] = [
+                {
+                    "target_group_name": tg.get("target_group_name"),
+                    "protocol": tg.get("protocol"),
+                    "port": tg.get("port"),
+                    "health_check_path": tg.get("health_check_path"),
+                    "healthy_hosts": tg.get("healthy_hosts"),
+                    "unhealthy_hosts": tg.get("unhealthy_hosts"),
+                    "targets": tg.get("targets", []),
+                }
+                for tg in load_balancer.get("target_groups", [])
+            ]
+
+        logger.info("Load Balancers promoted to first-class resources.")
+
                 # -------------------------------------------------
         # Merge Auto Scaling Data
         # -------------------------------------------------
@@ -353,6 +428,37 @@ class ContextBuilder:
                 }
 
         logger.info("Auto Scaling data merged successfully.")
+
+        # -------------------------------------------------
+        # Promote each Auto Scaling Group to its own first-class
+        # resource (the loop above only ever used ASG data to enrich
+        # its member EC2 instances).
+        # -------------------------------------------------
+
+        for asg in autoscaling.get("resources", []):
+
+            asg_name = asg.get("asg_name")
+
+            if not asg_name:
+                continue
+
+            self.add_resource(asg_name, resource_type="Auto Scaling Group")
+
+            entry = self.resource_index[asg_name]
+
+            entry["asg_name"] = asg_name
+            entry["min_size"] = asg.get("min_size")
+            entry["max_size"] = asg.get("max_size")
+            entry["desired_capacity"] = asg.get("desired_capacity")
+            entry["health_check_type"] = asg.get("health_check_type")
+            entry["availability_zones"] = asg.get("availability_zones", [])
+            entry["metrics"] = asg.get("metrics", {})
+            entry["instances"] = asg.get("instances", [])
+            entry["scaling_policies"] = asg.get("scaling_policies", [])
+            entry["scaling_activities"] = asg.get("scaling_activities", [])
+
+        logger.info("Auto Scaling Groups promoted to first-class resources.")
+
                 # -------------------------------------------------
         # Merge CloudTrail Data
         # -------------------------------------------------
@@ -395,6 +501,43 @@ class ContextBuilder:
 
         # =====================================================
         # =====================================================
+    # Remove Stale Context Files
+    # =====================================================
+
+    def _cleanup_stale_context_files(self) -> None:
+        """
+        Deletes output/context/<id>.json for any resource that isn't in
+        the resource index this method is called with (built fresh from
+        this run's own collector data) - so a resource that no longer
+        exists in AWS (terminated instance, deleted ALB/ASG) stops
+        appearing in resources.json instead of lingering forever.
+
+        Only ever touches self.context_directory (output/context/).
+        output/raw/ and output/archive/ are never referenced here -
+        historical investigations are untouched.
+        """
+
+        if not self.context_directory.exists():
+            return
+
+        current_ids = set(self.resource_index.keys())
+
+        removed = 0
+
+        for existing_file in self.context_directory.glob("*.json"):
+
+            if existing_file.stem not in current_ids:
+
+                existing_file.unlink()
+
+                removed += 1
+
+                logger.info(f"Removed stale context file: {existing_file.name}")
+
+        if removed:
+            logger.info(f"Cleaned up {removed} stale context file(s).")
+
+    # =====================================================
     # Save AI Context Files
     # =====================================================
 
@@ -469,6 +612,9 @@ class ContextBuilder:
         self.build_resource_index()
 
         # Step 3
+        self._cleanup_stale_context_files()
+
+        # Step 4
         self.save_context()
 
         logger.info("=" * 60)
@@ -486,7 +632,10 @@ class ContextBuilder:
         (api/investigation_manager.py) writes exactly one context file
         instead of one per discovered resource. load_collectors() and
         build_resource_index() are reused unchanged; only what gets passed
-        to save_context() differs.
+        to save_context() differs. Stale context files are still pruned
+        fleet-wide (see _cleanup_stale_context_files) since the collectors
+        just ran fresh for the whole account regardless of which single
+        resource is about to be analyzed.
 
         Raises ValueError if the resource isn't present in the just-loaded
         collector data.
@@ -504,6 +653,11 @@ class ContextBuilder:
 
         if instance_id not in self.resource_index:
             raise ValueError(f"Resource '{instance_id}' not found in collected data")
+
+        # Prune stale files using the full fleet-wide index (collectors
+        # just ran fresh for the whole account), before narrowing down to
+        # the one resource actually being analyzed below.
+        self._cleanup_stale_context_files()
 
         self.resource_index = {instance_id: self.resource_index[instance_id]}
 

@@ -110,7 +110,10 @@ Type" / "Resource" dropdowns in the Single Resource Investigation launcher:
     { "id": "i-0123456789abcdef", "label": "Production-Web-01" }
   ],
   "Load Balancer": [
-    { "id": "app/prod-alb/50dc6c4950c9188", "label": "prod-alb" }
+    { "id": "prod-alb", "label": "prod-alb" }
+  ],
+  "Auto Scaling Group": [
+    { "id": "prod-web-asg", "label": "prod-web-asg" }
   ]
 }
 ```
@@ -118,7 +121,10 @@ Type" / "Resource" dropdowns in the Single Resource Investigation launcher:
 Keys are free-text resource type labels (shown verbatim in the Resource
 Type dropdown); each entry needs `id` (passed back as `resource_id` when
 starting an investigation), `label` is **optional** and falls back to `id`
-when absent.
+when absent. For Load Balancer / Auto Scaling Group, `id` is the resource's
+own name (`alb_name` / `asg_name` - unique per account+region, same as AWS
+itself enforces), not an ARN - see `context/context_builder.py`'s ALB/ASG
+promotion in `build_resource_index()`.
 
 ## `analytics.json` — AnalyticsService (Analytics page)
 

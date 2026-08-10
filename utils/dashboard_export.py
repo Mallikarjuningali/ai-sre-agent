@@ -282,6 +282,104 @@ def build_executions_json(runs):
     return executions
 
 
+def build_ec2_telemetry(cloudwatch_ctx):
+    """Unchanged from before this was made resource-type aware - same
+    fields, same source (context["context"]["cloudwatch"])."""
+    if not cloudwatch_ctx:
+        return None
+    return {
+        "state": cloudwatch_ctx.get("State"),
+        "cpu": cloudwatch_ctx.get("CPU"),
+        "memory": cloudwatch_ctx.get("Memory"),
+        "disk": cloudwatch_ctx.get("Disk"),
+        "network_in": cloudwatch_ctx.get("NetworkIn"),
+        "network_out": cloudwatch_ctx.get("NetworkOut"),
+        "status_check": cloudwatch_ctx.get("StatusCheck"),
+    }
+
+
+def build_load_balancer_telemetry(alb_ctx):
+    """From context/context_builder.py's ALB promotion: metrics is the
+    ALB-level CloudWatch snapshot; healthy/unhealthy target counts are
+    tracked per target group in the raw data, so summed here for one
+    ALB-level figure."""
+    if not alb_ctx:
+        return None
+
+    metrics = alb_ctx.get("metrics") or {}
+    target_groups = alb_ctx.get("target_groups") or []
+
+    healthy_targets = sum(tg.get("healthy_hosts") or 0 for tg in target_groups)
+    unhealthy_targets = sum(tg.get("unhealthy_hosts") or 0 for tg in target_groups)
+
+    return {
+        "request_count": metrics.get("request_count"),
+        "target_response_time": metrics.get("response_time"),
+        # elb_4xx/5xx (rejected before reaching a target) and
+        # target_4xx/5xx (returned by a target) are both real signals -
+        # combined here into one figure per the two requested metrics.
+        "http_4xx": (metrics.get("elb_4xx") or 0) + (metrics.get("target_4xx") or 0),
+        "http_5xx": (metrics.get("elb_5xx") or 0) + (metrics.get("target_5xx") or 0),
+        "healthy_targets": healthy_targets,
+        "unhealthy_targets": unhealthy_targets,
+    }
+
+
+def build_auto_scaling_group_telemetry(asg_ctx):
+    """From context/context_builder.py's ASG promotion. "Standby" isn't
+    one of the metrics the autoscaling collector fetches from CloudWatch
+    (collector/autoscaling.py is unchanged, per this fix's constraints),
+    but every instance's lifecycle_state is already collected - so it's
+    derived here by counting, not by adding a new collector call."""
+    if not asg_ctx:
+        return None
+
+    metrics = asg_ctx.get("metrics") or {}
+    instances = asg_ctx.get("instances") or []
+
+    standby_instances = sum(
+        1 for instance in instances
+        if str(instance.get("lifecycle_state") or "").strip().lower() == "standby"
+    )
+
+    scaling_activities = [
+        {
+            "status": activity.get("status"),
+            "description": activity.get("description"),
+            "start_time": activity.get("start_time"),
+        }
+        for activity in (asg_ctx.get("scaling_activities") or [])
+    ]
+
+    return {
+        "desired_capacity": metrics.get("desired_capacity"),
+        "in_service_instances": metrics.get("in_service"),
+        "pending_instances": metrics.get("pending"),
+        "standby_instances": standby_instances,
+        "scaling_activities": scaling_activities,
+    }
+
+
+def build_telemetry(context):
+    """Resource-type aware report["telemetry"] extraction - backs the
+    Report Viewer's Telemetry card. Reads straight from the (unsanitized)
+    context file dashboard_export already loaded, same as before; the only
+    change is picking the right sub-structure for the resource type
+    instead of assuming "cloudwatch" always exists."""
+
+    resource_type = context.get("resource_type")
+    data = context.get("context") or {}
+
+    if resource_type == "Load Balancer":
+        return build_load_balancer_telemetry(data)
+
+    if resource_type == "Auto Scaling Group":
+        return build_auto_scaling_group_telemetry(data)
+
+    # Default: EC2.
+    return build_ec2_telemetry(data.get("cloudwatch"))
+
+
 def build_reports_json(reports, contexts, runs, prev_state):
     """Returns (reports_json_array, new_state_snapshot)."""
     result = []
@@ -314,17 +412,9 @@ def build_reports_json(reports, contexts, runs, prev_state):
             if resource_type:
                 report["resource_type"] = resource_type
 
-            cloudwatch_ctx = (context.get("context") or {}).get("cloudwatch")
-            if cloudwatch_ctx:
-                report["telemetry"] = {
-                    "state": cloudwatch_ctx.get("State"),
-                    "cpu": cloudwatch_ctx.get("CPU"),
-                    "memory": cloudwatch_ctx.get("Memory"),
-                    "disk": cloudwatch_ctx.get("Disk"),
-                    "network_in": cloudwatch_ctx.get("NetworkIn"),
-                    "network_out": cloudwatch_ctx.get("NetworkOut"),
-                    "status_check": cloudwatch_ctx.get("StatusCheck"),
-                }
+            telemetry = build_telemetry(context)
+            if telemetry:
+                report["telemetry"] = telemetry
 
         run_id = find_run_id_for(runs, detected_dt)
         if run_id:

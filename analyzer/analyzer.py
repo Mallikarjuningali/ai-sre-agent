@@ -92,7 +92,20 @@ class Analyzer:
 
         context_dir = Path("output/context")
 
-        context_files = sorted(context_dir.glob("*.json"))
+        all_context_files = sorted(context_dir.glob("*.json"))
+
+        # output/context/ now also holds first-class Load Balancer / Auto
+        # Scaling Group resources (context/context_builder.py) - Full
+        # Investigation has only ever analyzed EC2 instances, so those are
+        # filtered out here, before instances_discovered is computed, to
+        # keep this method's counts and behavior exactly as they were.
+        # ALB/ASG resources remain analyzable via Single Resource
+        # Investigation (Analyzer.run()), which is unaffected by this.
+        context_files = [
+            context_file
+            for context_file in all_context_files
+            if (self.prompt.load_context(context_file.name) or {}).get("resource_type") == "EC2"
+        ]
 
         summary.instances_discovered = len(context_files)
 

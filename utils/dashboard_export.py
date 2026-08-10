@@ -262,6 +262,7 @@ def build_executions_json(runs):
     executions = []
     for run in runs:
         start_dt = run.get("_start_dt")
+        end_dt = parse_ist_clock_string(run.get("end_time"))
         executions.append(
             {
                 "run_id": run.get("_run_id"),
@@ -270,7 +271,11 @@ def build_executions_json(runs):
                 "successful": run.get("successful", 0),
                 "failed": run.get("failed", 0),
                 "resources": run.get("instances_discovered", 0),
+                "resources_analyzed": run.get("instances_analyzed", 0),
+                "resources_skipped": run.get("resources_skipped", 0),
+                "reports_generated": run.get("reports_generated", 0),
                 "start_time": start_dt.isoformat() if start_dt else None,
+                "finished_at": end_dt.isoformat() if end_dt else None,
             }
         )
     executions.sort(key=lambda e: e["start_time"] or "", reverse=True)
@@ -308,6 +313,18 @@ def build_reports_json(reports, contexts, runs, prev_state):
             resource_type = label_resource_type(context.get("resource_type"))
             if resource_type:
                 report["resource_type"] = resource_type
+
+            cloudwatch_ctx = (context.get("context") or {}).get("cloudwatch")
+            if cloudwatch_ctx:
+                report["telemetry"] = {
+                    "state": cloudwatch_ctx.get("State"),
+                    "cpu": cloudwatch_ctx.get("CPU"),
+                    "memory": cloudwatch_ctx.get("Memory"),
+                    "disk": cloudwatch_ctx.get("Disk"),
+                    "network_in": cloudwatch_ctx.get("NetworkIn"),
+                    "network_out": cloudwatch_ctx.get("NetworkOut"),
+                    "status_check": cloudwatch_ctx.get("StatusCheck"),
+                }
 
         run_id = find_run_id_for(runs, detected_dt)
         if run_id:

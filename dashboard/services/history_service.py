@@ -40,6 +40,12 @@ class HistoryService:
         records = cached(f"history::{EXECUTIONS_KEY}", self._ttl, _load)
         return sorted(records, key=lambda r: r.get("start_time") or r.get("run_id") or "", reverse=True)
 
+    def get_execution(self, run_id: str) -> dict | None:
+        """One execution record by run_id - backs the Report Viewer's
+        execution overview card. Reuses list_executions()'s cache; no new
+        DataSource read."""
+        return next((e for e in self.list_executions() if e.get("run_id") == run_id), None)
+
     @staticmethod
     def search(executions: list[dict], query: str) -> list[dict]:
         if not query:

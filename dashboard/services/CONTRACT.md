@@ -53,7 +53,12 @@ Array of Execution objects. **Core** fields:
 
 **Optional** additions used by the History/Overview tables: `type`
 (e.g. `"Full Investigation"`), `status` (e.g. `"COMPLETED"`, `"RUNNING"`,
-`"FAILED"`), `start_time` (ISO-8601).
+`"FAILED"`), `start_time` (ISO-8601), `finished_at` (ISO-8601),
+`resources_analyzed` (attempted, whether or not it succeeded -
+distinct from `successful`), `resources_skipped` (e.g. terminated/
+shutting-down EC2 instances a Full Investigation didn't bother analyzing),
+`reports_generated` (successes only). Used by the Report Viewer's
+execution overview card - see `report_viewer.py`.
 
 ## `reports.json` — ReportService (Investigation page)
 
@@ -72,7 +77,17 @@ Array of Report objects. **Core** fields:
 
 **Optional** additions: `report_id`, `run_id` (links the report back to the
 execution that produced it), `resource_type`, `detected_at`,
-`ai_confidence` (0-1), and `resource_tree` — a nested topology used by the
+`ai_confidence` (0-1), `telemetry` (the resource's own CloudWatch snapshot
+at analysis time - backs the Report Viewer's Telemetry card):
+
+```json
+"telemetry": {
+  "state": "running", "cpu": 92.4, "memory": 88.1, "disk": 74.0,
+  "network_in": 1203981, "network_out": 998211, "status_check": "PASS"
+}
+```
+
+and `resource_tree` — a nested topology used by the
 Investigation page's Resource Tree panel:
 
 ```json

@@ -20,6 +20,15 @@ from config.settings import (
 
 logger = get_logger("Analyzer")
 
+# EC2 instance states worth spending a Gemini call on, used only by
+# run_all() (Full Investigation). A stopped/pending/stopping instance can
+# still be meaningfully RCA'd; shutting-down/terminated ones can't -
+# skipping those saves collector-adjacent work and Gemini tokens on
+# resources that won't produce a useful report. run() (single-resource) is
+# unaffected: a user explicitly picking one resource gets it analyzed
+# regardless of state.
+ELIGIBLE_STATES = {"running", "stopped", "pending", "stopping"}
+
 
 class Analyzer:
 
@@ -95,9 +104,30 @@ class Analyzer:
 
             context = self.prompt.load_context(context_file.name)
 
-            prompt = self.prompt.build_prompt(context)
-
             instance_id = context["instance_id"]
+
+            cloudwatch_ctx = (context.get("context") or {}).get("cloudwatch") or {}
+            state = str(cloudwatch_ctx.get("State") or "").strip().lower()
+
+            if state not in ELIGIBLE_STATES:
+
+                reason = f"Instance state '{state or 'unknown'}' is not eligible for analysis"
+
+                summary.skipped += 1
+                summary.skipped_resources.append({
+                    "instance_id": instance_id,
+                    "state": state or "unknown",
+                    "reason": reason,
+                })
+
+                logger.info(f"Skipping {instance_id}: {reason}")
+
+                if on_progress:
+                    on_progress("RUNNING_AI_ANALYSIS", 20 + int(60 * (index / total_files)), instance_id)
+
+                continue
+
+            prompt = self.prompt.build_prompt(context)
 
             summary.instances_analyzed += 1
 

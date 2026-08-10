@@ -31,6 +31,7 @@ import collector.cloudtrail as cloudtrail_collector
 import collector.cloudwatch as cloudwatch_collector
 from analyzer.analyzer import Analyzer
 from utils.dashboard_export import export as export_dashboard_feed
+from utils.execution_summary import ExecutionSummary
 from utils.logger import get_logger
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -215,6 +216,18 @@ class InvestigationManager:
 
     def _execute_resource(self, run_id: str, resource_id: str):
         on_progress = self._make_progress_callback(run_id)
+
+        # Analyzer.run() (single-resource) never writes an ExecutionSummary
+        # itself - only run_all() does - so without this, a completed
+        # resource-scoped run would have no output/summary/<run_id>.json and
+        # wouldn't carry duration/status/counts into executions.json for the
+        # Report Viewer. This wraps around analyzer.run() at the
+        # orchestration layer only; it does not touch Analyzer, ContextBuilder
+        # or ReportWriter, so the verified 1-resource/1-context/1-Gemini-call/
+        # 1-report guarantee is unaffected.
+        summary = ExecutionSummary(run_id=run_id)
+        summary.instances_discovered = 1
+
         try:
             on_progress("COLLECTING_METRICS", 2, resource_id)
             cloudwatch_collector.main()
@@ -233,6 +246,11 @@ class InvestigationManager:
 
             analyzer.run(context_filename, on_progress=on_progress, resource_id=resource_id)
 
+            summary.instances_analyzed = 1
+            summary.successful = 1
+            summary.reports_generated = 1
+            summary.save()
+
             on_progress("PUBLISHING_DASHBOARD", 95, resource_id)
             try:
                 export_dashboard_feed()
@@ -245,4 +263,10 @@ class InvestigationManager:
         except Exception as exc:
             logger.error(f"Resource investigation {run_id} ({resource_id}) failed")
             logger.exception(exc)
+            summary.instances_analyzed = 1
+            summary.failed = 1
+            try:
+                summary.save()
+            except Exception:
+                logger.exception(f"Failed to save execution summary for failed run {run_id}")
             self._finish(run_id, "FAILED", error=str(exc))

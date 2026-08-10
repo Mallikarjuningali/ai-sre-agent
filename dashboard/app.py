@@ -14,12 +14,13 @@ import streamlit as st
 
 from components.sidebar import render_sidebar
 from components.theme import configure_page, inject_theme
-from components.views import analytics, history, investigation, overview, settings
+from components.views import analytics, history, investigation, overview, report_viewer, settings
 from services import DataSourceError, build_services, load_config
 
 PAGES = {
     "overview": ("Overview", overview),
     "investigation": ("Investigation", investigation),
+    "report": ("Investigation Report", report_viewer),
     "history": ("Execution History", history),
     "analytics": ("Analytics", analytics),
     "settings": ("Settings", settings),

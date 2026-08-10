@@ -56,7 +56,7 @@ def render(services, config) -> None:
         rows_html = []
         for run in filtered:
             run_id = run.get("run_id", "—")
-            open_link = f'<a class="ao-link-btn" href="?page=investigation&run_id={run_id}" target="_self">Open Report →</a>'
+            open_link = f'<a class="ao-link-btn" href="?page=report&run_id={run_id}" target="_self">Open Report →</a>'
             row_class = "ao-row-selected" if run_id in selected_ids else ""
             cells = [
                 f'<span class="ao-mono">{run_id}</span>',

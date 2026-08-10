@@ -362,7 +362,12 @@ def _render_progress_panel(active: dict, status: dict | None, poll_error: str | 
             col_a, col_b = st.columns([1, 1])
             with col_a:
                 if st.button("View Full Report →", key="progress_view_report", width="stretch"):
+                    # Same hand-off app.py's own query-param handling uses for
+                    # a real URL (?page=report&run_id=...) - just set directly
+                    # since we're already in-session. Report Viewer, not
+                    # Investigation, is where completed reports live now.
                     st.session_state["preselected_run_id"] = active.get("run_id")
+                    st.session_state["active_page"] = "report"
                     st.session_state.pop(_SESSION_KEY, None)
                     st.rerun()
             with col_b:

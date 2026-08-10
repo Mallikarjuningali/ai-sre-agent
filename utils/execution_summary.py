@@ -36,6 +36,9 @@ class ExecutionSummary:
         self.instances_discovered = 0
         self.instances_analyzed = 0
 
+        self.skipped = 0
+        self.skipped_resources = []
+
         self.successful = 0
         self.failed = 0
 
@@ -68,7 +71,11 @@ class ExecutionSummary:
         if self.failed > 0 and self.successful > 0:
             self.status = "PARTIAL_SUCCESS"
 
-        elif self.failed == self.instances_discovered:
+        elif self.instances_analyzed > 0 and self.failed == self.instances_analyzed:
+            # Compare against instances_analyzed (attempted), not
+            # instances_discovered - skipped resources were never attempted,
+            # so they must not count as failures when every attempted
+            # resource actually failed.
             self.status = "FAILED"
 
         else:
@@ -102,6 +109,12 @@ class ExecutionSummary:
 
             "instances_analyzed":
                 self.instances_analyzed,
+
+            "resources_skipped":
+                self.skipped,
+
+            "skipped_resources":
+                self.skipped_resources,
 
             "reports_generated":
                 self.reports_generated,

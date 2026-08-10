@@ -20,14 +20,67 @@ from config.settings import (
 
 logger = get_logger("Analyzer")
 
-# EC2 instance states worth spending a Gemini call on, used only by
-# run_all() (Full Investigation). A stopped/pending/stopping instance can
-# still be meaningfully RCA'd; shutting-down/terminated ones can't -
-# skipping those saves collector-adjacent work and Gemini tokens on
-# resources that won't produce a useful report. run() (single-resource) is
-# unaffected: a user explicitly picking one resource gets it analyzed
-# regardless of state.
+# Per-resource-type eligibility, used only by run_all() (Full
+# Investigation). run() (single-resource) is unaffected: a user explicitly
+# picking one resource gets it analyzed regardless of state.
+
+# EC2: a stopped/pending/stopping instance can still be meaningfully RCA'd;
+# shutting-down/terminated ones can't - skipping those saves collector-
+# adjacent work and Gemini tokens on resources that won't produce a useful
+# report.
 ELIGIBLE_STATES = {"running", "stopped", "pending", "stopping"}
+
+# Load Balancer: collector/alb.py records alb["State"]["Code"] straight from
+# describe_load_balancers(), whose only documented values are active,
+# provisioning, active_impaired, failed - there is no "deleted" code,
+# because a deleted ALB simply stops being returned by that call at all, so
+# there's nothing further to filter for that case. "active" and
+# "active_impaired" both mean the ALB currently exists and is
+# serving/attempting to serve traffic; "provisioning" (not yet up) and
+# "failed" (never came up) have no real metrics or target health worth a
+# Gemini call.
+ELIGIBLE_ALB_STATES = {"active", "active_impaired"}
+
+# Auto Scaling Group: describe_auto_scaling_groups() (collector/
+# autoscaling.py) has no lifecycle "state" field for the group itself -
+# unlike EC2/ALB, an ASG doesn't have a provisioning/active/deleting
+# concept in that API. A deleted ASG simply stops appearing in the
+# response, so every ASG context file that exists already represents a
+# currently-active group. There is no state to check, so every discovered
+# ASG is eligible - see _resource_eligibility() below.
+
+# Skip-reason labels, used only for the log line / skipped_resources entry.
+_RESOURCE_LABELS = {
+    "EC2": "Instance",
+    "Load Balancer": "Load Balancer",
+    "Auto Scaling Group": "Auto Scaling Group",
+}
+
+
+def _resource_eligibility(context):
+    """Resource-type-aware eligibility check for Full Investigation.
+
+    Returns (eligible: bool, state_label: str). Each resource type is
+    judged only against the state/data its own collector already
+    produces - see the constants above for why each type's rule is what
+    it is. Never invents a state that isn't already in the collector
+    output.
+    """
+
+    resource_type = context.get("resource_type")
+    data = context.get("context") or {}
+
+    if resource_type == "Load Balancer":
+        state = str(data.get("state") or "").strip().lower()
+        return state in ELIGIBLE_ALB_STATES, state or "unknown"
+
+    if resource_type == "Auto Scaling Group":
+        return True, "active"
+
+    # Default: EC2.
+    cloudwatch_ctx = data.get("cloudwatch") or {}
+    state = str(cloudwatch_ctx.get("State") or "").strip().lower()
+    return state in ELIGIBLE_STATES, state or "unknown"
 
 
 class Analyzer:
@@ -92,20 +145,12 @@ class Analyzer:
 
         context_dir = Path("output/context")
 
-        all_context_files = sorted(context_dir.glob("*.json"))
-
-        # output/context/ now also holds first-class Load Balancer / Auto
-        # Scaling Group resources (context/context_builder.py) - Full
-        # Investigation has only ever analyzed EC2 instances, so those are
-        # filtered out here, before instances_discovered is computed, to
-        # keep this method's counts and behavior exactly as they were.
-        # ALB/ASG resources remain analyzable via Single Resource
-        # Investigation (Analyzer.run()), which is unaffected by this.
-        context_files = [
-            context_file
-            for context_file in all_context_files
-            if (self.prompt.load_context(context_file.name) or {}).get("resource_type") == "EC2"
-        ]
+        # output/context/ holds one file per discovered resource - EC2
+        # instances, and now also first-class Load Balancer / Auto Scaling
+        # Group resources (context/context_builder.py). Full Investigation
+        # analyzes every supported type; eligibility is decided per-resource
+        # below via _resource_eligibility(), not by resource_type filtering.
+        context_files = sorted(context_dir.glob("*.json"))
 
         summary.instances_discovered = len(context_files)
 
@@ -118,18 +163,20 @@ class Analyzer:
             context = self.prompt.load_context(context_file.name)
 
             instance_id = context["instance_id"]
+            resource_type = context.get("resource_type")
 
-            cloudwatch_ctx = (context.get("context") or {}).get("cloudwatch") or {}
-            state = str(cloudwatch_ctx.get("State") or "").strip().lower()
+            eligible, state = _resource_eligibility(context)
 
-            if state not in ELIGIBLE_STATES:
+            if not eligible:
 
-                reason = f"Instance state '{state or 'unknown'}' is not eligible for analysis"
+                label = _RESOURCE_LABELS.get(resource_type, "Resource")
+                reason = f"{label} state '{state}' is not eligible for analysis"
 
                 summary.skipped += 1
                 summary.skipped_resources.append({
                     "instance_id": instance_id,
-                    "state": state or "unknown",
+                    "resource_type": resource_type,
+                    "state": state,
                     "reason": reason,
                 })
 

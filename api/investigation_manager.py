@@ -126,6 +126,7 @@ class InvestigationManager:
                 "percent": 0,
                 "current_resource": resource_id,
                 "resource_type": resource_type,
+                "resource_id": resource_id,
                 "started_at": datetime.now(IST).isoformat(),
                 "error": None,
                 "phases": [
@@ -215,10 +216,22 @@ class InvestigationManager:
     def _execute_resource(self, run_id: str, resource_id: str):
         on_progress = self._make_progress_callback(run_id)
         try:
+            on_progress("COLLECTING_METRICS", 2, resource_id)
+            cloudwatch_collector.main()
+
+            on_progress("COLLECTING_METRICS", 5, resource_id)
+            alb_collector.main()
+
+            on_progress("COLLECTING_METRICS", 8, resource_id)
+            autoscaling_collector.main()
+
+            on_progress("COLLECTING_METRICS", 10, resource_id)
+            cloudtrail_collector.main()
+
             analyzer = Analyzer()
             context_filename = f"{resource_id}.json"
 
-            analyzer.run(context_filename, on_progress=on_progress)
+            analyzer.run(context_filename, on_progress=on_progress, resource_id=resource_id)
 
             on_progress("PUBLISHING_DASHBOARD", 95, resource_id)
             try:

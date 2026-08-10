@@ -141,7 +141,9 @@ GET /investigation/status/{run_id}
     "phase": "RUNNING_AI_ANALYSIS",
     "phase_label": "Running AI Analysis",
     "percent": 62,
-    "current_resource": "i-0a1b2c3d4e5f67890",
+    "resource_type": "EC2 Instance",            // null for a Full Infrastructure run
+    "resource_id": "i-0a1b2c3d4e5f67890",        // null for a Full Infrastructure run
+    "current_resource": "i-0a1b2c3d4e5f67890",   // changes as a Full run works through resources
     "elapsed_seconds": 145,
     "remaining_seconds_estimate": 90,
     "phases": [

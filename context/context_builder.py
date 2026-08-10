@@ -474,6 +474,45 @@ class ContextBuilder:
         logger.info("=" * 60)
         logger.info("Context Builder completed successfully.")
         logger.info("=" * 60)
+
+    # =====================================================
+    # Execute Context Builder - single resource
+    # =====================================================
+
+    def run_for_resource(self, instance_id: str) -> None:
+        """
+        Same pipeline as run(), but narrows the resource index down to one
+        instance right before saving - so a resource-scoped investigation
+        (api/investigation_manager.py) writes exactly one context file
+        instead of one per discovered resource. load_collectors() and
+        build_resource_index() are reused unchanged; only what gets passed
+        to save_context() differs.
+
+        Raises ValueError if the resource isn't present in the just-loaded
+        collector data.
+        """
+
+        logger.info("=" * 60)
+        logger.info(f"Starting Context Builder (single resource: {instance_id})")
+        logger.info("=" * 60)
+
+        # Step 1
+        self.load_collectors()
+
+        # Step 2
+        self.build_resource_index()
+
+        if instance_id not in self.resource_index:
+            raise ValueError(f"Resource '{instance_id}' not found in collected data")
+
+        self.resource_index = {instance_id: self.resource_index[instance_id]}
+
+        # Step 3
+        self.save_context()
+
+        logger.info("=" * 60)
+        logger.info("Context Builder completed successfully (single resource).")
+        logger.info("=" * 60)
 # =========================================================
 # Main Function
 # =========================================================

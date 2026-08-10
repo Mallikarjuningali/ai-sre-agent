@@ -30,12 +30,20 @@ class Analyzer:
         self.llm = LLMEngine()
         self.report = ReportWriter()
 
-    def run(self, context_file, on_progress=None):
+    def run(self, context_file, on_progress=None, resource_id=None):
+        """resource_id scopes context building to that one resource (see
+        ContextBuilder.run_for_resource) instead of rebuilding every
+        resource's context just to analyze one - used by
+        api/investigation_manager.py's single-resource investigation.
+        run_all() never sets this; its own context build stays untouched."""
 
         if on_progress:
             on_progress("BUILDING_CONTEXT", 15)
 
-        self.builder.run()
+        if resource_id:
+            self.builder.run_for_resource(resource_id)
+        else:
+            self.builder.run()
 
         context = self.prompt.load_context(context_file)
 

@@ -12,7 +12,7 @@ import streamlit as st
 from ..badges import new_badge, severity_badge, status_badge
 from ..cards import card, card_title, empty_state, kpi_card
 from ..charts import health_donut, line_trend, stacked_severity_bar
-from ..formatting import format_duration, format_number, time_ago
+from ..formatting import format_datetime, format_duration, format_number, time_ago
 from ..tables import collector_row, investigation_row, render_list_rows, render_table
 from ..topbar import last_refreshed_chip, page_header
 
@@ -184,7 +184,7 @@ def render(services, config) -> None:
                     str(run.get("successful", "—")),
                     str(run.get("failed", "—")),
                     format_duration(run.get("execution_time")),
-                    run.get("start_time", "—"),
+                    format_datetime(run.get("start_time")),
                 ]
             )
         render_table(

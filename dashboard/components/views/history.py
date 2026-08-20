@@ -9,7 +9,7 @@ from services import ExecutionActionError, invalidate
 
 from ..badges import status_badge
 from ..cards import card, card_title, empty_state
-from ..formatting import format_duration
+from ..formatting import format_datetime, format_duration
 from ..icons import svg_icon
 from ..topbar import page_header
 
@@ -66,7 +66,7 @@ def render(services, config) -> None:
                 str(run.get("successful", "—")),
                 str(run.get("failed", "—")),
                 format_duration(run.get("execution_time")),
-                run.get("start_time", "—"),
+                format_datetime(run.get("start_time")),
                 open_link,
             ]
             rows_html.append(f'<tr class="{row_class}">' + "".join(f"<td>{c}</td>" for c in cells) + "</tr>")

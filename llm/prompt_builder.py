@@ -14,6 +14,11 @@ import json
 from pathlib import Path
 from llm.sanitizer import Sanitizer
 
+# output/prompts/ is a live debugging directory, not investigation history
+# (that's what output/archive/<run_id>/prompts/ is for) - capped at the
+# newest N files so it never grows indefinitely.
+MAX_PROMPT_FILES = 5
+
 
 class PromptBuilder:
 
@@ -26,6 +31,17 @@ class PromptBuilder:
             self.project_root /
             "output" /
             "context"
+        )
+
+        self.prompt_directory = (
+            self.project_root /
+            "output" /
+            "prompts"
+        )
+
+        self.prompt_directory.mkdir(
+            parents=True,
+            exist_ok=True
         )
 
     def load_context(self, filename):
@@ -94,6 +110,9 @@ timestamp is HH:MM and index 0 is the oldest sample, index 1 (the last
 entry) is the newest. Nothing about H has been interpreted for you - it is
 the raw sequence.
 
+All timestamps in metric history are in Asia/Kolkata (IST) and represent
+the local investigation time.
+
 Analyze the complete historical sequence in H for every metric, not only
 the most recent sample. Determine for each: sustained increases, sustained
 decreases, transient spikes that already recovered, oscillation between
@@ -116,4 +135,39 @@ Infrastructure Context:
 
 {json.dumps(context, separators=(",", ":"))}
 """
+        self._save_prompt(context["instance_id"], prompt)
+
         return prompt
+
+    def _save_prompt(self, resource_id, prompt):
+        """Debug-only artifact: persists the exact string handed to
+        LLMEngine.analyze() next, byte-for-byte - no reformatting, no
+        regeneration. Never affects what's actually sent to Gemini."""
+
+        file_path = self.prompt_directory / f"{resource_id}.txt"
+
+        with open(
+            file_path,
+            "w",
+            encoding="utf-8"
+        ) as file:
+
+            file.write(prompt)
+
+        self._cleanup_old_prompts()
+
+    def _cleanup_old_prompts(self):
+        """Keeps only the MAX_PROMPT_FILES most recently written prompts in
+        the live output/prompts/ directory. output/archive/ is never
+        touched here - archived prompts are investigation history, not
+        live debug state."""
+
+        prompt_files = sorted(
+            self.prompt_directory.glob("*.txt"),
+            key=lambda path: path.stat().st_mtime,
+        )
+
+        excess = len(prompt_files) - MAX_PROMPT_FILES
+
+        for stale_file in prompt_files[:max(excess, 0)]:
+            stale_file.unlink()

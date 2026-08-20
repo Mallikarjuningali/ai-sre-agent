@@ -14,7 +14,8 @@ FOLDERS_TO_ARCHIVE = [
     "context",
     "reports",
     "logs",
-    "summary"
+    "summary",
+    "prompts"
 ]
 
 

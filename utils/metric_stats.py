@@ -23,6 +23,10 @@ Purpose:
 =========================================================
 """
 
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
+
 # =========================================================
 # Public API
 # =========================================================
@@ -59,7 +63,7 @@ def build_metric_payload(datapoints, unit, threshold_value=None, threshold_opera
         payload["TH"] = {"V": threshold_value, "OP": threshold_operator}
 
     payload["H"] = [
-        [point["timestamp"].strftime("%H:%M"), round(point["value"], round_digits)]
+        [point["timestamp"].astimezone(IST).strftime("%H:%M"), round(point["value"], round_digits)]
         for point in ordered
     ]
 

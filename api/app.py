@@ -245,6 +245,11 @@ def head_cost_history_feed():
     return Response(status_code=_cost_feed_exists_status("history.json"), media_type="application/json")
 
 
+@app.head("/cost-explorer/credits")
+def head_cost_credits_feed():
+    return Response(status_code=_cost_feed_exists_status("credits.json"), media_type="application/json")
+
+
 @app.head("/cost-explorer/services")
 def head_cost_services_feed():
     return Response(status_code=_cost_feed_exists_status("services.json"), media_type="application/json")
@@ -273,6 +278,11 @@ def get_cost_summary_feed():
 @app.get("/cost-explorer/history")
 def get_cost_history_feed():
     return _read_cost_feed_file("history.json")
+
+
+@app.get("/cost-explorer/credits")
+def get_cost_credits_feed():
+    return _read_cost_feed_file("credits.json")
 
 
 @app.get("/cost-explorer/services")

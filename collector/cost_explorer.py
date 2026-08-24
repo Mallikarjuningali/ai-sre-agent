@@ -197,6 +197,85 @@ def get_daily_history(start_date, end_date):
 
 
 # =========================================================
+# Credits (AWS Cost Explorer has no "Credits" metric - the only real
+# way to isolate credit records is GetCostAndUsage's existing
+# UnblendedCost metric filtered to RECORD_TYPE=Credit)
+# =========================================================
+
+def get_credit_history(start_date, end_date):
+    """Real AWS credit amounts for [start_date, end_date) via
+    GetCostAndUsage, DAILY granularity, filtered to the RECORD_TYPE
+    dimension = "Credit" - the AWS-documented way to isolate credit
+    records; there is no separate "Credits" metric to request. One
+    query yields both the daily history and its total (summed here),
+    so no second API call is needed for the total - see requirement to
+    avoid unnecessary calls.
+
+    AWS reports Credit records as negative UnblendedCost amounts (a
+    credit reduces the bill) - that sign is preserved exactly as AWS
+    returns it, never flipped. Any positive "credits applied" framing
+    belongs to the presentation layer, not here.
+
+    Returns (history: list[[date, amount]], total: float | None,
+    currency: str | None). total/currency are None only when the API
+    call itself failed. An account with genuinely zero credit records
+    (the common case) returns total=0.0 with an empty history - summing
+    zero real records is legitimately zero, not "unknown", so this is
+    not treated the same as a failed call."""
+
+    try:
+        response = ce.get_cost_and_usage(
+            TimePeriod={"Start": _iso_date(start_date), "End": _iso_date(end_date)},
+            Granularity="DAILY",
+            Metrics=["UnblendedCost"],
+            Filter={"Dimensions": {"Key": "RECORD_TYPE", "Values": ["Credit"]}},
+        )
+
+        results = response.get("ResultsByTime") or []
+
+        history = []
+        currency = None
+
+        for result in results:
+
+            period_start = (result.get("TimePeriod") or {}).get("Start")
+
+            if not period_start:
+                continue
+
+            total_block = result.get("Total") or {}
+            cost = total_block.get("UnblendedCost") or {}
+            amount = cost.get("Amount")
+
+            if amount is None:
+                continue
+
+            amount = round(float(amount), 2)
+
+            # A day with no credit activity reports as 0 (or is simply
+            # absent from Total) - omitted from the history, same as
+            # "no data that day", not padded with a no-op zero row.
+            if amount == 0:
+                continue
+
+            currency = cost.get("Unit") or currency
+
+            history.append([period_start, amount])
+
+        history.sort(key=lambda point: point[0])
+
+        total = round(sum(point[1] for point in history), 2) if history else 0.0
+
+        return history, total, currency
+
+    except Exception as exc:
+
+        logger.error(f"get_credit_history failed: {exc}")
+
+        return [], None, None
+
+
+# =========================================================
 # Service / region breakdown
 # =========================================================
 
@@ -430,6 +509,10 @@ def main():
 
     daily_history = get_daily_history(bounds["current_start"], bounds["current_end"])
 
+    credit_history, credit_total, credit_currency = get_credit_history(
+        bounds["current_start"], bounds["current_end"]
+    )
+
     service_breakdown = get_service_breakdown(bounds["current_start"], bounds["current_end"])
     region_breakdown = get_region_breakdown(bounds["current_start"], bounds["current_end"])
 
@@ -467,6 +550,16 @@ def main():
         "previous_cost": previous_total,
 
         "daily_history": daily_history,
+
+        "credits": {
+
+            "total": credit_total,
+
+            "currency": credit_currency,
+
+            "history": credit_history,
+
+        },
 
         "service_breakdown": service_breakdown,
 

@@ -66,6 +66,20 @@ class CostContextBuilder:
         if total_cost is not None and previous_cost is not None and previous_cost != 0:
             change_percent = round(((total_cost - previous_cost) / previous_cost) * 100, 2)
 
+        credits = raw.get("credits") or {"total": None, "currency": None, "history": []}
+        credits_total = credits.get("total")
+
+        # total_cost (UnblendedCost, unfiltered) already includes credit
+        # records, since AWS has no way to exclude a record type from
+        # UnblendedCost - it IS the net-of-credits figure. gross_cost is
+        # simply the arithmetic inverse of that fact: net minus the
+        # (negative) credits total recovers what the cost would have
+        # been before credits were applied - no separate AWS query, no
+        # invented number. Only computed when both real values exist.
+        gross_cost = None
+        if total_cost is not None and credits_total is not None:
+            gross_cost = round(total_cost - credits_total, 2)
+
         return {
 
             "generated_by": "AI-SRE-Agent-CostExplorer",
@@ -79,6 +93,10 @@ class CostContextBuilder:
             "previous_cost": previous_cost,
 
             "change_percent": change_percent,
+
+            "gross_cost": gross_cost,
+
+            "credits": credits,
 
             "daily_history": raw.get("daily_history") or [],
 

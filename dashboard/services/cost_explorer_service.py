@@ -15,8 +15,11 @@ served in REST mode by api/app.py's matching /cost-explorer/* routes -
 the keys below are deliberately the same path shape as those routes so
 RestApiDataSource.read_json(key) hits them with no translation):
 
-    cost-explorer/summary   -> {total_cost, previous_cost, change_percent, currency, period, generated_at}
+    cost-explorer/summary   -> {total_cost, previous_cost, change_percent, currency, period,
+                                generated_at, credits_total, gross_cost}
+                               (credits_total/gross_cost are additive - the rest is unchanged)
     cost-explorer/history   -> {daily_history: [[date, value], ...], currency}
+    cost-explorer/credits   -> {total, currency, history: [[date, amount], ...]}
     cost-explorer/services  -> {service_breakdown: [{service, cost, currency}], currency}
     cost-explorer/regions   -> {region_breakdown: [{region, cost, currency}], currency}
     cost-explorer/anomalies -> {status, reason, anomalies: [...]}
@@ -33,6 +36,7 @@ from .data_source import DataSource
 
 SUMMARY_KEY = "cost-explorer/summary"
 HISTORY_KEY = "cost-explorer/history"
+CREDITS_KEY = "cost-explorer/credits"
 SERVICES_KEY = "cost-explorer/services"
 REGIONS_KEY = "cost-explorer/regions"
 ANOMALIES_KEY = "cost-explorer/anomalies"
@@ -41,8 +45,10 @@ REPORT_KEY = "cost-explorer/report"
 _EMPTY_SUMMARY: dict[str, Any] = {
     "total_cost": None, "previous_cost": None, "change_percent": None,
     "currency": None, "period": {}, "generated_at": None,
+    "credits_total": None, "gross_cost": None,
 }
 _EMPTY_HISTORY: dict[str, Any] = {"daily_history": [], "currency": None}
+_EMPTY_CREDITS: dict[str, Any] = {"total": None, "currency": None, "history": []}
 _EMPTY_SERVICES: dict[str, Any] = {"service_breakdown": [], "currency": None}
 _EMPTY_REGIONS: dict[str, Any] = {"region_breakdown": [], "currency": None}
 _EMPTY_ANOMALIES: dict[str, Any] = {
@@ -72,6 +78,9 @@ class CostExplorerService:
 
     def get_history(self) -> dict:
         return self._get(HISTORY_KEY, _EMPTY_HISTORY)
+
+    def get_credits(self) -> dict:
+        return self._get(CREDITS_KEY, _EMPTY_CREDITS)
 
     def get_services(self) -> dict:
         return self._get(SERVICES_KEY, _EMPTY_SERVICES)

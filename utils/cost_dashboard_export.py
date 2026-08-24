@@ -9,11 +9,14 @@ Purpose:
     output/cost/context/ and output/cost/reports/, writes only
     output/cost/dashboard_feed/.
 
-    Six feed files, one per dashboard concern, mirroring the existing
+    Seven feed files, one per dashboard concern, mirroring the existing
     infra dashboard's "one JSON file per concern" convention:
 
-        summary.json    - current/previous cost, change, currency, period
+        summary.json    - current/previous cost, change, credits_total,
+                           gross_cost, currency, period (all additive -
+                           the original fields are unchanged)
         history.json    - daily cost datapoints
+        credits.json    - AWS credit total/history (RECORD_TYPE=Credit)
         services.json   - cost grouped by AWS service
         regions.json    - cost grouped by AWS region
         anomalies.json  - AWS Cost Anomaly Detection findings/status
@@ -68,6 +71,7 @@ def load_report() -> dict:
 
 
 def build_summary(context: dict, generated_at: str) -> dict:
+    credits = context.get("credits") or {}
     return {
         "total_cost": context.get("total_cost"),
         "previous_cost": context.get("previous_cost"),
@@ -75,6 +79,9 @@ def build_summary(context: dict, generated_at: str) -> dict:
         "currency": context.get("currency"),
         "period": context.get("period") or {},
         "generated_at": generated_at,
+        # Additive - existing fields above are byte-for-byte unchanged.
+        "credits_total": credits.get("total"),
+        "gross_cost": context.get("gross_cost"),
     }
 
 
@@ -82,6 +89,15 @@ def build_history(context: dict) -> dict:
     return {
         "daily_history": context.get("daily_history") or [],
         "currency": context.get("currency"),
+    }
+
+
+def build_credits(context: dict) -> dict:
+    credits = context.get("credits") or {}
+    return {
+        "total": credits.get("total"),
+        "currency": credits.get("currency"),
+        "history": credits.get("history") or [],
     }
 
 
@@ -116,6 +132,7 @@ def export() -> None:
 
     atomic_write_json(FEED_DIR / "summary.json", build_summary(context, generated_at))
     atomic_write_json(FEED_DIR / "history.json", build_history(context))
+    atomic_write_json(FEED_DIR / "credits.json", build_credits(context))
     atomic_write_json(FEED_DIR / "services.json", build_services(context))
     atomic_write_json(FEED_DIR / "regions.json", build_regions(context))
     atomic_write_json(FEED_DIR / "anomalies.json", build_anomalies(context))

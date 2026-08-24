@@ -53,10 +53,17 @@ class CostContextBuilder:
         previous_cost = raw.get("previous_cost")
 
         # Arithmetic over two real AWS totals only - never computed when
-        # either side is missing, and never a divide-by-zero guess when
-        # the previous period genuinely had $0 of cost.
+        # either side is missing, and never a divide-by-zero when the
+        # previous period genuinely had $0 of cost. This must check
+        # "is not None", not truthiness: previous_cost can legitimately
+        # be a real AWS-reported 0.0 (or -0.0), and a plain `if
+        # previous_cost:` would treat that as "missing" and silently
+        # skip a computable change (e.g. total_cost=50, previous_cost=0
+        # is a valid, computable +infinite%... which is exactly why 0 is
+        # still excluded below - only via an explicit != 0 check, not by
+        # accident by way of falsiness).
         change_percent = None
-        if total_cost is not None and previous_cost:
+        if total_cost is not None and previous_cost is not None and previous_cost != 0:
             change_percent = round(((total_cost - previous_cost) / previous_cost) * 100, 2)
 
         return {

@@ -37,6 +37,21 @@ def _iso_date(d):
     return d.strftime("%Y-%m-%d")
 
 
+def _error_code(exc):
+    """The AWS error code (e.g. "ValidationException", "AccessDeniedException")
+    from a botocore ClientError, or None for anything else (a plain
+    exception, a network error, ...). Used to distinguish a legitimate,
+    expected AWS rejection from a real system failure - never guessed
+    when the exception doesn't actually carry this information."""
+
+    response = getattr(exc, "response", None)
+
+    if not isinstance(response, dict):
+        return None
+
+    return (response.get("Error") or {}).get("Code")
+
+
 def _period_bounds():
     """Current period: the last COST_LOOKBACK_DAYS days, ending today.
     Previous period: the equal-length window immediately before it - both
@@ -101,7 +116,18 @@ def get_total_cost(start_date, end_date):
         if not found_any:
             return None, None
 
-        return round(total_amount, 2), currency
+        rounded = round(total_amount, 2)
+
+        # AWS can legitimately return a net cost that rounds to a tiny
+        # negative float (e.g. credits/discounts nearly offsetting usage,
+        # or floating-point residue like "-1.08e-19" in the raw Amount).
+        # -0.0 == 0.0 in Python, so this only ever normalizes a
+        # genuinely-zero-or-negligible result - it never changes a real
+        # non-zero total, positive or negative.
+        if rounded == 0:
+            rounded = 0.0
+
+        return rounded, currency
 
     except Exception as exc:
 
@@ -118,7 +144,15 @@ def get_daily_history(start_date, end_date):
     """Real AWS daily cost datapoints for [start_date, end_date) via
     GetCostAndUsage, DAILY granularity. Returns [date_label, value] pairs,
     oldest -> newest - the raw sequence only, no trend/anomaly
-    classification happens here."""
+    classification happens here.
+
+    date_label is the full "YYYY-MM-DD" AWS gave us in TimePeriod.Start -
+    not a "DD-MM"-style abbreviation. A year-less, ambiguous label like
+    "18-08" is exactly the kind of string a chart library's date-axis
+    auto-detection can silently misparse; an unambiguous ISO date can't
+    be. Friendly display formatting (e.g. "Aug 18") happens only at
+    chart-render time in the dashboard, never here - this stays the
+    machine-safe, sortable value."""
 
     try:
         response = ce.get_cost_and_usage(
@@ -145,10 +179,13 @@ def get_daily_history(start_date, end_date):
             if amount is None:
                 continue
 
-            date_obj = datetime.strptime(period_start, "%Y-%m-%d")
-            date_label = date_obj.strftime("%d-%m")
+            history.append([period_start, round(float(amount), 2)])
 
-            history.append([date_label, round(float(amount), 2)])
+        # AWS's own documented ordering for ResultsByTime is already
+        # chronological, but an explicit sort on the (now unambiguous,
+        # lexicographically-sortable) ISO date guarantees oldest -> newest
+        # regardless, at negligible cost for a 14-point list.
+        history.sort(key=lambda point: point[0])
 
         return history
 
@@ -264,8 +301,17 @@ def get_anomalies(start_date, end_date):
       this window - i.e. AWS actually checked and found nothing.
     - "found": real AWS-reported anomalies, their actual
       impact/score/service/dates preserved as-is.
-    - "unavailable": an API call failed (e.g. permissions) - never
-      silently folded into "none_found".
+    - "unsupported_range": AWS rejected the requested date window as
+      invalid for anomaly detection (e.g. end_date beyond AWS's latest
+      supported detection date) - a legitimate condition, distinct from
+      a real failure, so it's never confused with "unavailable".
+    - "unavailable": an actual unexpected API/system error (permissions,
+      throttling, network, ...) - never silently folded into
+      "none_found" or "unsupported_range".
+
+    end_date must not exceed AWS's latest supported detection date
+    (effectively "today") - callers are responsible for passing a date
+    that respects that constraint; see main()'s anomaly_end_date.
 
     Both get_anomaly_monitors() and get_anomalies() are paginated via
     NextPageToken (their actual boto3 request/response field, same as
@@ -330,6 +376,16 @@ def get_anomalies(start_date, end_date):
 
     except Exception as exc:
 
+        if _error_code(exc) == "ValidationException":
+
+            # A legitimate, expected AWS constraint (e.g. the requested
+            # date window falls outside what GetAnomalies currently
+            # supports) - not a system failure, so it gets its own status
+            # rather than being folded into "unavailable".
+            logger.warning(f"get_anomalies rejected the requested date range: {exc}")
+
+            return {"status": "unsupported_range", "reason": str(exc), "anomalies": []}
+
         logger.error(f"get_anomalies failed: {exc}")
 
         return {"status": "unavailable", "reason": str(exc), "anomalies": []}
@@ -377,7 +433,16 @@ def main():
     service_breakdown = get_service_breakdown(bounds["current_start"], bounds["current_end"])
     region_breakdown = get_region_breakdown(bounds["current_start"], bounds["current_end"])
 
-    anomalies = get_anomalies(bounds["current_start"], bounds["current_end"])
+    # GetAnomalies' DateInterval.EndDate has a different constraint than
+    # GetCostAndUsage's exclusive End: AWS caps it at the "latest
+    # supported detection date," which is today (inclusive) - not
+    # tomorrow. bounds["current_end"] is deliberately tomorrow (for the
+    # cost-usage calls above), so it must NOT be reused here as-is;
+    # subtracting one day recovers "today" from the same value already
+    # computed, without introducing a second date calculation.
+    anomaly_end_date = bounds["current_end"] - timedelta(days=1)
+
+    anomalies = get_anomalies(bounds["current_start"], anomaly_end_date)
 
     data = {
 

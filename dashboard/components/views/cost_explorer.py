@@ -7,6 +7,8 @@ and nothing here reads or displays infra investigation report data.
 """
 from __future__ import annotations
 
+from datetime import datetime
+
 import streamlit as st
 
 from services import CostExplorerActionError, invalidate
@@ -118,12 +120,25 @@ def _render_cost_overview(summary: dict) -> None:
 # Cost trend
 # ---------------------------------------------------------------------------
 
+def _format_chart_date(iso_date: str) -> str:
+    """"YYYY-MM-DD" (the backend's unambiguous, sortable date) -> "Aug 18"
+    for display only. Never sent to the chart library as the raw
+    ambiguous "DD-MM"-style string that caused it to misparse dates onto
+    a bogus year axis - this formatting happens here, at render time,
+    not in the stored/transmitted data."""
+
+    try:
+        return datetime.strptime(iso_date, "%Y-%m-%d").strftime("%b %d")
+    except (TypeError, ValueError):
+        return iso_date or "—"
+
+
 def _render_cost_trend(daily: list) -> None:
     if not daily:
         empty_state("No cost history yet", "Click Refresh to fetch AWS Cost Explorer data", "📈")
         return
 
-    x = [point[0] for point in daily]
+    x = [_format_chart_date(point[0]) for point in daily]
     y = [point[1] for point in daily]
     st.plotly_chart(line_trend(x, y, height=280), config={"displayModeBar": False})
 
@@ -161,12 +176,25 @@ def _render_anomalies(anomalies: dict) -> None:
             )
         return
 
+    # "reason" is a clean, short, human-written string for every status
+    # except "unavailable"/"unsupported_range", where the collector's
+    # reason IS the raw AWS/boto3 exception text - too technical (and
+    # potentially long) for the main card body, so those two get a short
+    # fixed summary here and the real text tucked into a details
+    # expander instead of being dumped into the main UI.
+    show_details = False
+
     if status == "not_configured":
         icon, label = "🟡", "Anomaly Detection Not Configured"
         detail = anomalies.get("reason") or "No AWS Cost Anomaly monitors configured"
+    elif status == "unsupported_range":
+        icon, label = "🟠", "No Cost Anomaly Data Available"
+        detail = "AWS Cost Anomaly Detection doesn't support this date range yet."
+        show_details = True
     elif status == "unavailable":
-        icon, label = "⚪", "Anomaly Data Unavailable"
-        detail = anomalies.get("reason") or "Could not retrieve anomaly data"
+        icon, label = "⚪", "Cost Anomaly Data Unavailable"
+        detail = "Could not retrieve anomaly data due to an unexpected error."
+        show_details = True
     else:  # "none_found", or nothing published yet
         icon, label = "🟢", "No Cost Anomalies Detected"
         detail = anomalies.get("reason") or "AWS did not report any cost anomalies for this period"
@@ -181,6 +209,11 @@ def _render_anomalies(anomalies: dict) -> None:
         """,
         unsafe_allow_html=True,
     )
+
+    raw_reason = anomalies.get("reason")
+    if show_details and raw_reason:
+        with st.expander("Technical details"):
+            st.code(raw_reason, language=None)
 
 
 # ---------------------------------------------------------------------------

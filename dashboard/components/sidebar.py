@@ -10,6 +10,7 @@ NAV_ITEMS = [
     ("investigation", "Investigation", ":material/search:"),
     ("history", "Execution History", ":material/history:"),
     ("analytics", "Analytics", ":material/monitoring:"),
+    ("cost_explorer", "Cost Explorer", ":material/payments:"),
     ("settings", "Settings", ":material/settings:"),
 ]
 

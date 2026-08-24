@@ -9,6 +9,7 @@ from .resource_service import ResourceService
 from .analytics_service import AnalyticsService
 from .investigation_service import InvestigationActionError, InvestigationService
 from .execution_service import ExecutionActionError, ExecutionService
+from .cost_explorer_service import CostExplorerActionError, CostExplorerService, CostRefreshService
 from .bootstrap import Services, build_services
 
 __all__ = [
@@ -28,6 +29,9 @@ __all__ = [
     "InvestigationActionError",
     "ExecutionService",
     "ExecutionActionError",
+    "CostExplorerService",
+    "CostRefreshService",
+    "CostExplorerActionError",
     "Services",
     "build_services",
 ]

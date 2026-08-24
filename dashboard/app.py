@@ -14,7 +14,7 @@ import streamlit as st
 
 from components.sidebar import render_sidebar
 from components.theme import configure_page, inject_theme
-from components.views import analytics, history, investigation, overview, report_viewer, settings
+from components.views import analytics, cost_explorer, history, investigation, overview, report_viewer, settings
 from services import DataSourceError, build_services, load_config
 
 PAGES = {
@@ -23,6 +23,7 @@ PAGES = {
     "report": ("Investigation Report", report_viewer),
     "history": ("Execution History", history),
     "analytics": ("Analytics", analytics),
+    "cost_explorer": ("Cost Explorer", cost_explorer),
     "settings": ("Settings", settings),
 }
 

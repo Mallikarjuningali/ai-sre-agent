@@ -38,3 +38,13 @@ REQUEST_DELAY = 3
 
 MAX_RUN_HISTORY = 5
 
+# =========================================================
+# Cost Explorer Configuration
+# =========================================================
+# Number of days of daily cost history to fetch, and the width of the
+# "current period" window compared against an equal-length "previous
+# period" immediately before it - a single knob so the collector never
+# hardcodes a lookback.
+
+COST_LOOKBACK_DAYS = 14
+

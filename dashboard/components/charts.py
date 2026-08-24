@@ -156,7 +156,6 @@ def horizontal_bar(labels: list[str], values: list[float], height: int = 260) ->
         **_base_layout(height=height, showlegend=False),
         xaxis=_grid_axis(),
         yaxis=_grid_axis(showgrid=False, autorange="reversed"),
-        margin=dict(l=10, r=10, t=10, b=10),
     )
     return fig
 

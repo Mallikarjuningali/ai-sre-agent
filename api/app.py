@@ -42,12 +42,19 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from api.investigation_manager import InvestigationBusyError, InvestigationManager
+from api.cost_explorer_manager import CostExplorerBusyError, CostExplorerManager
 from utils.dashboard_export import FEED_DIR, build_resources_json, load_current_contexts
+from utils.cost_dashboard_export import FEED_DIR as COST_FEED_DIR
 from utils.execution_cleanup import delete_executions
 
 app = FastAPI(title="AI SRE Agent API")
 
 manager = InvestigationManager()
+
+# Cost Explorer is a completely separate pipeline (own collector, own
+# Gemini analysis, own feed directory) - its own manager/lock so a cost
+# refresh can never collide with an infra investigation.
+cost_manager = CostExplorerManager()
 
 
 class ResourceInvestigationRequest(BaseModel):
@@ -194,3 +201,95 @@ def get_analytics_feed():
 @app.get("/resources.json")
 def get_resources_feed():
     return _read_feed_file("resources.json")
+
+
+# -----------------------------------------------------------------------
+# Cost Explorer - completely separate pipeline/feed from everything above.
+# POST /cost-explorer/refresh triggers a fresh boto3 Cost Explorer query
+# (collector -> CostAnalyzer -> cost_dashboard_export), synchronously -
+# these calls return in low single digit seconds, so no run_id/polling
+# machinery is used here, unlike /investigation/full. The six GET/HEAD
+# routes below are pure passthroughs of output/cost/dashboard_feed/*.json,
+# exactly like the infra feed routes above are for output/dashboard_feed/.
+# -----------------------------------------------------------------------
+
+@app.post("/cost-explorer/refresh")
+def refresh_cost_explorer():
+    try:
+        return cost_manager.refresh()
+    except CostExplorerBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Cost Explorer refresh failed: {exc}")
+
+
+def _read_cost_feed_file(filename: str):
+    path = COST_FEED_DIR / filename
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"{filename} not found")
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _cost_feed_exists_status(filename: str) -> int:
+    return 200 if (COST_FEED_DIR / filename).exists() else 404
+
+
+@app.head("/cost-explorer/summary")
+def head_cost_summary_feed():
+    return Response(status_code=_cost_feed_exists_status("summary.json"), media_type="application/json")
+
+
+@app.head("/cost-explorer/history")
+def head_cost_history_feed():
+    return Response(status_code=_cost_feed_exists_status("history.json"), media_type="application/json")
+
+
+@app.head("/cost-explorer/services")
+def head_cost_services_feed():
+    return Response(status_code=_cost_feed_exists_status("services.json"), media_type="application/json")
+
+
+@app.head("/cost-explorer/regions")
+def head_cost_regions_feed():
+    return Response(status_code=_cost_feed_exists_status("regions.json"), media_type="application/json")
+
+
+@app.head("/cost-explorer/anomalies")
+def head_cost_anomalies_feed():
+    return Response(status_code=_cost_feed_exists_status("anomalies.json"), media_type="application/json")
+
+
+@app.head("/cost-explorer/report")
+def head_cost_report_feed():
+    return Response(status_code=_cost_feed_exists_status("report.json"), media_type="application/json")
+
+
+@app.get("/cost-explorer/summary")
+def get_cost_summary_feed():
+    return _read_cost_feed_file("summary.json")
+
+
+@app.get("/cost-explorer/history")
+def get_cost_history_feed():
+    return _read_cost_feed_file("history.json")
+
+
+@app.get("/cost-explorer/services")
+def get_cost_services_feed():
+    return _read_cost_feed_file("services.json")
+
+
+@app.get("/cost-explorer/regions")
+def get_cost_regions_feed():
+    return _read_cost_feed_file("regions.json")
+
+
+@app.get("/cost-explorer/anomalies")
+def get_cost_anomalies_feed():
+    return _read_cost_feed_file("anomalies.json")
+
+
+@app.get("/cost-explorer/report")
+def get_cost_report_feed():
+    return _read_cost_feed_file("report.json")

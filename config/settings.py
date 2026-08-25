@@ -30,6 +30,13 @@ METRIC_TREND_PERIOD_SECONDS = 300
 
 GEMINI_MODEL = "gemini-3.5-flash-lite"
 
+# Bounds a single generate_content() call - without this, a hung/slow
+# Gemini request blocks the calling thread indefinitely (confirmed: no
+# timeout existed anywhere in this codebase before). A bounded timeout
+# turns a hang into a raised exception, which the existing MAX_RETRIES/
+# backoff loop in analyzer.py already knows how to handle.
+GEMINI_REQUEST_TIMEOUT_SECONDS = 60
+
 MAX_RETRIES = 4
 
 INITIAL_RETRY_DELAY = 5

@@ -44,6 +44,7 @@ from pydantic import BaseModel
 
 from api.investigation_manager import InvestigationBusyError, InvestigationManager
 from api.cost_explorer_manager import CostExplorerBusyError, CostExplorerManager
+from api.resource_discovery import discover_resources
 from utils.dashboard_export import FEED_DIR, build_resources_json, load_current_contexts
 from utils.cost_dashboard_export import FEED_DIR as COST_FEED_DIR
 from utils.execution_cleanup import delete_executions
@@ -89,6 +90,20 @@ def get_investigation_status(run_id: str):
     if status is None:
         raise HTTPException(status_code=404, detail="Unknown run_id")
     return status
+
+
+@app.get("/investigation/resources")
+def get_investigation_resources():
+    """Live AWS resource discovery for the Single Resource Investigation
+    picker - see api/resource_discovery.py. Deliberately independent of
+    output/raw|context and of whether Full Investigation has ever run;
+    AWS is queried directly on every call. Not to be confused with the
+    existing GET /resources above, which reads output/context/*.json
+    (a byproduct of a previous investigation) and is left untouched."""
+    try:
+        return discover_resources()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"AWS resource discovery failed: {exc}")
 
 
 @app.get("/resources")

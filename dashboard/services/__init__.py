@@ -6,6 +6,7 @@ from .collector_service import CollectorService
 from .history_service import HistoryService
 from .report_service import ReportService
 from .resource_service import ResourceService
+from .resource_discovery_service import ResourceDiscoveryActionError, ResourceDiscoveryService
 from .analytics_service import AnalyticsService
 from .investigation_service import InvestigationActionError, InvestigationService
 from .execution_service import ExecutionActionError, ExecutionService
@@ -24,6 +25,8 @@ __all__ = [
     "HistoryService",
     "ReportService",
     "ResourceService",
+    "ResourceDiscoveryService",
+    "ResourceDiscoveryActionError",
     "AnalyticsService",
     "InvestigationService",
     "InvestigationActionError",

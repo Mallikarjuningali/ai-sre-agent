@@ -8,12 +8,18 @@ Before an investigation starts, the operator picks a mode:
 Starting either mode calls InvestigationService (POST /investigation/full or
 POST /investigation/resource — see services/CONTRACT.md). This module never
 computes or fabricates investigation results itself: KPI numbers come from
-SummaryService, the resource picker comes from ResourceService, and once a
-run is in flight, every field in the progress panel (phase, percent,
-current resource, elapsed/remaining) comes from InvestigationService's
-status poll. When the configured backend can't accept a live run (local/S3
-data source), starting a run surfaces a clear inline message instead of
-simulating one.
+SummaryService, and once a run is in flight, every field in the progress
+panel (phase, percent, current resource, elapsed/remaining) comes from
+InvestigationService's status poll. When the configured backend can't
+accept a live run (local/S3 data source), starting a run surfaces a clear
+inline message instead of simulating one.
+
+The Single Resource picker's inventory can come from either of two
+sources: ResourceService's cached resources.json feed (a byproduct of a
+previous investigation, if one has run), or - via the "Refresh Resources"
+button - ResourceDiscoveryService, which queries AWS directly
+(GET /investigation/resources) and needs no prior investigation to have
+run at all. See _refresh_resources() below.
 """
 from __future__ import annotations
 
@@ -27,10 +33,19 @@ from .cards import card, card_title, empty_state
 from .formatting import format_duration, format_number, parse_dt, time_ago
 from .icons import svg_icon
 from .badges import status_badge
-from services import InvestigationActionError
+from services import InvestigationActionError, ResourceDiscoveryActionError
 
 _SESSION_KEY = "launch_active_run"
 _ERROR_KEY = "launch_error"
+
+# Live-refreshed resource inventory (see _refresh_resources) - kept in
+# session_state, separate from ResourceService's resources.json-backed
+# cache, so "Refresh Resources" never depends on output/context/*.json or
+# on Full Investigation having run first.
+_REFRESHED_INVENTORY_KEY = "refresh_resources_inventory"
+_REFRESHED_AT_KEY = "refresh_resources_last_refreshed"
+_REFRESH_ERROR_KEY = "refresh_resources_error"
+_SELECTION_CLEARED_KEY = "refresh_resources_selection_cleared"
 
 _DEFAULT_PHASES = [
     {"key": "COLLECTING_METRICS", "label": "Collecting Metrics"},
@@ -175,8 +190,6 @@ def _resource_display_text(resource: dict) -> str:
 
 
 def _render_resource_card(services) -> None:
-    inventory = services.resource.get_inventory()
-
     st.markdown(
         f"""
         <div class="ao-mode-card-header">
@@ -193,15 +206,41 @@ def _render_resource_card(services) -> None:
         unsafe_allow_html=True,
     )
 
+    if st.button("↻ Refresh Resources", key="refresh_resources_btn", width="stretch"):
+        _refresh_resources(services)
+
+    refresh_error = st.session_state.pop(_REFRESH_ERROR_KEY, None)
+    if refresh_error:
+        st.markdown(
+            f'<div class="ao-launch-error">{svg_icon("alert-triangle", size=14, color="#fca5a5")}'
+            f"<span>{html.escape(refresh_error)}</span></div>",
+            unsafe_allow_html=True,
+        )
+
+    selection_cleared = st.session_state.pop(_SELECTION_CLEARED_KEY, None)
+    if selection_cleared:
+        st.caption(f"⚠️ {selection_cleared}")
+
+    last_refreshed = st.session_state.get(_REFRESHED_AT_KEY)
+    if last_refreshed:
+        st.caption(f"Last refreshed {time_ago(last_refreshed)} (live from AWS)")
+
+    # Prefer the live-refreshed inventory (this session, this AWS call).
+    # Falls back to the published resources.json feed so the picker still
+    # works exactly as before if the operator hasn't clicked Refresh yet
+    # but a previous investigation already published one - Refresh is what
+    # removes the dependency on that feed, not a requirement to use it.
+    inventory = st.session_state.get(_REFRESHED_INVENTORY_KEY) or services.resource.get_inventory()
+
     if not inventory:
-        empty_state("No resource inventory published yet", "Waiting on resources.json from the backend", "🗂️")
+        empty_state("No resources discovered yet", 'Click "Refresh Resources" to query AWS directly', "🗂️")
         st.button("Start Resource Investigation", key="launch_start_resource", type="primary", width="stretch", disabled=True)
         return
 
     resource_types = list(inventory.keys())
     resource_type = st.selectbox("Resource Type", resource_types, key="launch_resource_type")
 
-    resources = services.resource.get_resources_for_type(resource_type)
+    resources = inventory.get(resource_type) or []
     if not resources:
         st.selectbox("Resource", ["No resources discovered for this type"], key="launch_resource_empty", disabled=True)
         selected_resource = None
@@ -227,6 +266,54 @@ def _render_resource_card(services) -> None:
         disabled=selected_resource is None,
     ):
         _start_resource(services, resource_type, selected_resource)
+
+
+def _refresh_resources(services) -> None:
+    """Queries AWS directly (GET /investigation/resources) and replaces the
+    picker's inventory. Never starts an investigation, never creates a
+    report, never calls Gemini - this is discovery only. Preserves the
+    currently selected resource if it still exists post-refresh (matched
+    by id, not by the selectbox's display label); otherwise clears the
+    selection and surfaces a message instead of silently pointing at a
+    resource that's gone."""
+    prev_type = st.session_state.get("launch_resource_type")
+    prev_label = st.session_state.get("launch_resource_id")
+    prev_inventory = st.session_state.get(_REFRESHED_INVENTORY_KEY) or services.resource.get_inventory()
+
+    prev_id = None
+    if prev_type and prev_label:
+        for r in prev_inventory.get(prev_type) or []:
+            if _resource_display_text(r) == prev_label:
+                prev_id = r.get("id")
+                break
+
+    try:
+        inventory = services.resource_discovery.discover()
+    except ResourceDiscoveryActionError as exc:
+        st.session_state[_REFRESH_ERROR_KEY] = str(exc)
+        st.rerun()
+        return
+
+    st.session_state[_REFRESHED_INVENTORY_KEY] = inventory
+    st.session_state[_REFRESHED_AT_KEY] = datetime.now(timezone.utc).isoformat()
+    st.session_state.pop(_REFRESH_ERROR_KEY, None)
+
+    still_exists = bool(
+        prev_id
+        and prev_type
+        and any(r.get("id") == prev_id for r in inventory.get(prev_type) or [])
+    )
+
+    if prev_id and not still_exists:
+        # Clear the widgets' own keys so Streamlit doesn't try to render a
+        # now-stale selection - falls back to the first entry instead.
+        st.session_state.pop("launch_resource_type", None)
+        st.session_state.pop("launch_resource_id", None)
+        st.session_state[_SELECTION_CLEARED_KEY] = (
+            f'Previously selected resource "{prev_id}" no longer exists — selection cleared.'
+        )
+
+    st.rerun()
 
 
 def _start_full(services) -> None:

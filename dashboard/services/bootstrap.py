@@ -13,6 +13,7 @@ from .history_service import HistoryService
 from .investigation_service import InvestigationService, get_investigation_backend
 from .report_service import ReportService
 from .resource_service import ResourceService
+from .resource_discovery_service import ResourceDiscoveryService, get_resource_discovery_backend
 from .summary_service import SummaryService
 
 
@@ -25,6 +26,7 @@ class Services:
     report: ReportService
     analytics: AnalyticsService
     resource: ResourceService
+    resource_discovery: ResourceDiscoveryService
     investigation: InvestigationService
     execution: ExecutionService
     cost_explorer: CostExplorerService
@@ -42,6 +44,7 @@ def build_services(config: AppConfig) -> Services:
         report=ReportService(ds, ttl),
         analytics=AnalyticsService(ds, ttl),
         resource=ResourceService(ds, ttl),
+        resource_discovery=ResourceDiscoveryService(get_resource_discovery_backend(config)),
         investigation=InvestigationService(get_investigation_backend(config)),
         execution=ExecutionService(get_execution_backend(config)),
         cost_explorer=CostExplorerService(ds, ttl),

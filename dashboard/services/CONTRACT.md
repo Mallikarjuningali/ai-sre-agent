@@ -182,6 +182,35 @@ GET /investigation/status/{run_id}
 to also show up in `executions.json` / `reports.json` per the contracts
 above so the operator can jump straight to the report.
 
+## Live resource discovery — ResourceDiscoveryService ("Refresh Resources")
+
+A second, independent way to populate the Single Resource picker, made by
+`services/resource_discovery_service.py` the same write-ish/live-backend
+way as Investigation actions above (REST-only; local/S3 surfaces a clear
+error instead of pretending to query AWS). Unlike `resources.json`, this
+never reads `output/context/*.json` and does not require Full Investigation
+(or any investigation) to have ever run - every call queries AWS directly
+via `collector.cloudwatch.get_instances()` / `collector.alb
+.discover_load_balancers()` / `collector.autoscaling
+.discover_auto_scaling_groups()` (identity/metadata only, no metrics, no
+`output/raw` writes - see `api/resource_discovery.py`).
+
+```
+GET /investigation/resources
+  response: {
+    "EC2 Instance":        [ { "id": "i-0123456789abcdef", "label": "Production-Web-01" } ],
+    "Load Balancer":       [ { "id": "prod-alb", "label": "prod-alb" } ],
+    "Auto Scaling Group":  [ { "id": "prod-web-asg", "label": "prod-web-asg" } ]
+  }
+```
+
+Same shape as `resources.json` (see above), so the dashboard can treat
+either source identically. Returns `502` if the underlying AWS call fails
+- a real API/permissions failure is surfaced to the UI, never silently
+turned into an empty list (same principle the stale-collector-data fix
+applied to `collector/autoscaling.py`'s discovery function). Never starts
+an investigation, never writes a report, never calls Gemini.
+
 ## Execution management — ExecutionService (History page)
 
 The other write path, made by `services/execution_service.py` the same way

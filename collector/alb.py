@@ -504,7 +504,24 @@ def main():
     albs = discover_load_balancers()
 
     if not albs:
+
         print("No Application Load Balancers Found.")
+
+        # Must still overwrite alb.json for this run - otherwise a
+        # previous run's alb.json (possibly containing real ALBs) would
+        # silently remain on disk and get reloaded by context_builder.py
+        # as if it were current.
+        write_json(
+            "alb.json",
+            {
+                "collector": "alb",
+                "timestamp": datetime.now(UTC).isoformat(),
+                "resources": []
+            }
+        )
+
+        print("\nALB JSON report generated successfully.")
+
         return
 
     # One describe_alarms() call for this entire run - every metric below

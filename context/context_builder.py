@@ -16,8 +16,10 @@ Purpose:
 
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
+from zoneinfo import ZoneInfo
 
 # =========================================================
 # Configure Logger
@@ -29,6 +31,39 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+# =========================================================
+# Run-Scoped Freshness Helper
+# =========================================================
+# api/investigation_manager.py mints run_id as
+# datetime.now(IST).strftime("%d-%m-%Y_%H-%M-%S") *before* any collector
+# runs for that investigation - so it already doubles as this run's start
+# time. Used below to reject a collector's raw JSON if that file's own
+# "timestamp" field predates the run that's supposed to be using it,
+# instead of inventing an arbitrary staleness age.
+
+_IST = ZoneInfo("Asia/Kolkata")
+_RUN_ID_FORMAT = "%d-%m-%Y_%H-%M-%S"
+
+
+def _parse_run_started_at(run_id: Optional[str]) -> Optional[datetime]:
+    """Best-effort parse of run_id back into its start timestamp.
+
+    Returns None (freshness check disabled) if run_id is missing or
+    doesn't match the format InvestigationManager mints it in - e.g. the
+    plain CLI entrypoint (main.py) never passes a run_id at all, and
+    tests/tools may pass an arbitrary label. Callers must treat None as
+    "cannot validate freshness", not as "stale".
+    """
+
+    if not run_id:
+        return None
+
+    try:
+        return datetime.strptime(run_id, _RUN_ID_FORMAT).replace(tzinfo=_IST)
+    except ValueError:
+        return None
+
 
 # =========================================================
 # Context Builder Class
@@ -136,13 +171,25 @@ class ContextBuilder:
     # Load JSON File
     # =====================================================
 
-    def load_json(self, filename: str) -> Dict[str, Any]:
+    def load_json(
+        self,
+        filename: str,
+        run_started_at: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
         """
         Safely load a JSON file.
 
         Args:
             filename:
                 Name of the JSON file.
+            run_started_at:
+                Start time of the current investigation run, if known
+                (see _parse_run_started_at). When provided, and the
+                loaded file has its own "timestamp" field, a file whose
+                timestamp predates run_started_at is treated as stale
+                collector output from a previous run and rejected - see
+                _cleanup_stale_context_files docstring in run() for why
+                this matters specifically for alb.json/autoscaling.json.
 
         Returns:
             Parsed JSON dictionary.
@@ -152,6 +199,7 @@ class ContextBuilder:
             - File doesn't exist
             - Invalid JSON
             - File cannot be opened
+            - File's own timestamp predates this run (stale)
         """
 
         file_path = self.raw_directory / filename
@@ -182,7 +230,7 @@ class ContextBuilder:
                 encoding="utf-8"
             ) as file:
 
-                return json.load(file)
+                data = json.load(file)
 
         except (json.JSONDecodeError, OSError) as error:
 
@@ -192,11 +240,44 @@ class ContextBuilder:
 
             return {}
 
+        # -------------------------------------------------
+        # Reject Stale Collector Output
+        # -------------------------------------------------
+        # Only enforced when the caller knows this run's start time AND
+        # the file carries its own "timestamp" (currently alb.json and
+        # autoscaling.json - see collector/alb.py and
+        # collector/autoscaling.py). A file with no "timestamp" field is
+        # left untouched by this check, not treated as stale, since not
+        # every collector output embeds one.
+
+        if run_started_at is not None:
+
+            raw_timestamp = data.get("timestamp")
+
+            if raw_timestamp:
+
+                try:
+                    file_written_at = datetime.fromisoformat(raw_timestamp)
+                except ValueError:
+                    file_written_at = None
+
+                if file_written_at is not None and file_written_at < run_started_at:
+
+                    logger.error(
+                        f"Rejecting stale collector output '{filename}': "
+                        f"written at {raw_timestamp}, before current run "
+                        f"started at {run_started_at.isoformat()}."
+                    )
+
+                    return {}
+
+        return data
+
     # =====================================================
     # Load Collector Outputs
     # =====================================================
 
-    def load_collectors(self) -> None:
+    def load_collectors(self, run_started_at: Optional[datetime] = None) -> None:
         """
         Load all collector outputs.
         """
@@ -208,7 +289,8 @@ class ContextBuilder:
         for collector, filename in self.collector_files.items():
 
             self.collectors[collector] = self.load_json(
-                filename
+                filename,
+                run_started_at=run_started_at,
             )
 
             if self.collectors[collector]:
@@ -599,17 +681,24 @@ class ContextBuilder:
     # Execute Context Builder
     # =====================================================
 
-    def run(self) -> None:
+    def run(self, run_id: Optional[str] = None) -> None:
         """
         Execute Context Builder workflow.
+
+        run_id, when passed by the caller (Analyzer.run_all /
+        Analyzer.run, sourced from InvestigationManager), scopes the
+        collector-output freshness check in load_json() to this
+        investigation - see _parse_run_started_at.
         """
 
         logger.info("=" * 60)
         logger.info("Starting Context Builder")
         logger.info("=" * 60)
 
+        run_started_at = _parse_run_started_at(run_id)
+
         # Step 1
-        self.load_collectors()
+        self.load_collectors(run_started_at=run_started_at)
 
         logger.info("Collector outputs loaded successfully.")
 
@@ -630,7 +719,7 @@ class ContextBuilder:
     # Execute Context Builder - single resource
     # =====================================================
 
-    def run_for_resource(self, instance_id: str) -> None:
+    def run_for_resource(self, instance_id: str, run_id: Optional[str] = None) -> None:
         """
         Same pipeline as run(), but narrows the resource index down to one
         instance right before saving - so a resource-scoped investigation
@@ -642,6 +731,9 @@ class ContextBuilder:
         just ran fresh for the whole account regardless of which single
         resource is about to be analyzed.
 
+        run_id scopes the collector-output freshness check the same way
+        run() does - see _parse_run_started_at.
+
         Raises ValueError if the resource isn't present in the just-loaded
         collector data.
         """
@@ -650,8 +742,10 @@ class ContextBuilder:
         logger.info(f"Starting Context Builder (single resource: {instance_id})")
         logger.info("=" * 60)
 
+        run_started_at = _parse_run_started_at(run_id)
+
         # Step 1
-        self.load_collectors()
+        self.load_collectors(run_started_at=run_started_at)
 
         # Step 2
         self.build_resource_index()

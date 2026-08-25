@@ -244,7 +244,7 @@ class InvestigationManager:
             analyzer = Analyzer()
             context_filename = f"{resource_id}.json"
 
-            analyzer.run(context_filename, on_progress=on_progress, resource_id=resource_id)
+            analyzer.run(context_filename, on_progress=on_progress, resource_id=resource_id, run_id=run_id)
 
             summary.instances_analyzed = 1
             summary.successful = 1

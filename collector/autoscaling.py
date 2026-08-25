@@ -16,6 +16,8 @@ Purpose:
 
 from datetime import datetime, timedelta, UTC
 
+from botocore.exceptions import BotoCoreError, ClientError
+
 from utils.writer import write_json
 from utils.aws_clients import (
     get_autoscaling_client,
@@ -77,13 +79,23 @@ def discover_auto_scaling_groups():
 
         return asgs
 
-    except Exception as e:
+    except (BotoCoreError, ClientError) as e:
 
+        # A genuine AWS/API failure (throttling, permissions, network,
+        # etc.) must not be interpreted as "0 ASGs found" - that would
+        # make main() take the empty-discovery path and, previously,
+        # skip writing autoscaling.json entirely. Re-raise so the
+        # caller (main() -> InvestigationManager._execute_full()) sees
+        # this as a real failure instead of a silent, incorrect "no ASGs
+        # this run". Unexpected non-AWS exceptions (KeyError, TypeError,
+        # etc.) are intentionally not caught here at all - they were
+        # never AWS/API failures in the first place and should surface
+        # exactly as they would anywhere else in the codebase.
         logger.error(
             f"Failed to discover Auto Scaling Groups: {str(e)}"
         )
 
-        return []
+        raise
 
 
 # =========================================================
@@ -392,6 +404,21 @@ def main():
     if not asgs:
 
         print("No Auto Scaling Groups Found.")
+
+        # Must still overwrite autoscaling.json for this run - otherwise a
+        # previous run's autoscaling.json (possibly containing real ASGs)
+        # would silently remain on disk and get reloaded by
+        # context_builder.py as if it were current.
+        write_json(
+            "autoscaling.json",
+            {
+                "collector": "autoscaling",
+                "timestamp": datetime.now(UTC).isoformat(),
+                "resources": []
+            }
+        )
+
+        print("\nAuto Scaling JSON report generated successfully.")
 
         return
 

@@ -36,6 +36,7 @@ Run (from the ai-sre-agent/ project root, same cwd main.py expects):
 """
 
 import json
+from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
@@ -208,17 +209,31 @@ def get_resources_feed():
 # POST /cost-explorer/refresh triggers a fresh boto3 Cost Explorer query
 # (collector -> CostAnalyzer -> cost_dashboard_export), synchronously -
 # these calls return in low single digit seconds, so no run_id/polling
-# machinery is used here, unlike /investigation/full. The six GET/HEAD
-# routes below are pure passthroughs of output/cost/dashboard_feed/*.json,
+# machinery is used here, unlike /investigation/full. The GET/HEAD routes
+# below are pure passthroughs of output/cost/dashboard_feed/*.json,
 # exactly like the infra feed routes above are for output/dashboard_feed/.
 # -----------------------------------------------------------------------
 
+class CostRefreshRequest(BaseModel):
+    # Both optional, and only meaningful together: the user-selected
+    # Month/Period Comparison range from the dashboard's date pickers.
+    # Omitted entirely (or an empty {} body, which is what every existing
+    # caller already sends) -> the refresh behaves exactly as it did
+    # before this feature existed, so no existing caller breaks.
+    from_date: Optional[str] = None
+    to_date: Optional[str] = None
+
+
 @app.post("/cost-explorer/refresh")
-def refresh_cost_explorer():
+def refresh_cost_explorer(payload: Optional[CostRefreshRequest] = None):
+    from_date = payload.from_date if payload else None
+    to_date = payload.to_date if payload else None
     try:
-        return cost_manager.refresh()
+        return cost_manager.refresh(from_date=from_date, to_date=to_date)
     except CostExplorerBusyError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Cost Explorer refresh failed: {exc}")
 
@@ -265,6 +280,11 @@ def head_cost_anomalies_feed():
     return Response(status_code=_cost_feed_exists_status("anomalies.json"), media_type="application/json")
 
 
+@app.head("/cost-explorer/comparison")
+def head_cost_comparison_feed():
+    return Response(status_code=_cost_feed_exists_status("comparison.json"), media_type="application/json")
+
+
 @app.head("/cost-explorer/report")
 def head_cost_report_feed():
     return Response(status_code=_cost_feed_exists_status("report.json"), media_type="application/json")
@@ -298,6 +318,14 @@ def get_cost_regions_feed():
 @app.get("/cost-explorer/anomalies")
 def get_cost_anomalies_feed():
     return _read_cost_feed_file("anomalies.json")
+
+
+@app.get("/cost-explorer/comparison")
+def get_cost_comparison_feed():
+    # May legitimately be `null` (valid JSON) when no comparison has
+    # been requested yet - _read_cost_feed_file() only 404s when the
+    # file itself is missing, not when its content is null.
+    return _read_cost_feed_file("comparison.json")
 
 
 @app.get("/cost-explorer/report")

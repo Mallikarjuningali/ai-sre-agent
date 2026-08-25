@@ -23,7 +23,10 @@ RestApiDataSource.read_json(key) hits them with no translation):
     cost-explorer/services  -> {service_breakdown: [{service, cost, currency}], currency}
     cost-explorer/regions   -> {region_breakdown: [{region, cost, currency}], currency}
     cost-explorer/anomalies -> {status, reason, anomalies: [...]}
-    cost-explorer/report    -> the Gemini cost report (severity/summary/root_cause/evidence/recommendations/...)
+    cost-explorer/comparison -> {period_a, period_b, service_comparison, region_comparison,
+                                 absolute_difference, change_percent} or null (no comparison run yet)
+    cost-explorer/report    -> the Gemini cost report (severity/summary/root_cause/evidence/recommendations/...,
+                               plus an additive comparison_analysis when a comparison was part of this run)
 """
 from __future__ import annotations
 
@@ -40,6 +43,7 @@ CREDITS_KEY = "cost-explorer/credits"
 SERVICES_KEY = "cost-explorer/services"
 REGIONS_KEY = "cost-explorer/regions"
 ANOMALIES_KEY = "cost-explorer/anomalies"
+COMPARISON_KEY = "cost-explorer/comparison"
 REPORT_KEY = "cost-explorer/report"
 
 _EMPTY_SUMMARY: dict[str, Any] = {
@@ -54,6 +58,7 @@ _EMPTY_REGIONS: dict[str, Any] = {"region_breakdown": [], "currency": None}
 _EMPTY_ANOMALIES: dict[str, Any] = {
     "status": "unavailable", "reason": "No cost data published yet", "anomalies": [],
 }
+_EMPTY_COMPARISON: dict[str, Any] = {}
 _EMPTY_REPORT: dict[str, Any] = {}
 
 
@@ -91,6 +96,12 @@ class CostExplorerService:
     def get_anomalies(self) -> dict:
         return self._get(ANOMALIES_KEY, _EMPTY_ANOMALIES)
 
+    def get_comparison(self) -> dict:
+        """Empty dict when no Month/Period Comparison has been requested
+        yet - a valid "not run" state, distinct from a comparison that
+        genuinely found $0 difference."""
+        return self._get(COMPARISON_KEY, _EMPTY_COMPARISON)
+
     def get_report(self) -> dict:
         return self._get(REPORT_KEY, _EMPTY_REPORT)
 
@@ -105,8 +116,11 @@ class CostExplorerActionError(Exception):
 
 class CostExplorerBackend(ABC):
     @abstractmethod
-    def refresh(self) -> dict:
-        """Trigger a fresh AWS Cost Explorer query. Returns the backend's result dict."""
+    def refresh(self, from_date: str | None = None, to_date: str | None = None) -> dict:
+        """Trigger a fresh AWS Cost Explorer query. from_date/to_date
+        (optional, both required together) request a Month/Period
+        Comparison for that user-selected range in the same refresh.
+        Returns the backend's result dict."""
 
 
 class UnavailableCostExplorerBackend(CostExplorerBackend):
@@ -114,7 +128,7 @@ class UnavailableCostExplorerBackend(CostExplorerBackend):
 
     _MESSAGE = "Refreshing Cost Explorer data requires a REST backend. Configure one on the Settings page."
 
-    def refresh(self) -> dict:
+    def refresh(self, from_date: str | None = None, to_date: str | None = None) -> dict:
         raise CostExplorerActionError(self._MESSAGE)
 
 
@@ -131,15 +145,23 @@ class RestCostExplorerBackend(CostExplorerBackend):
             headers["Authorization"] = f"Bearer {self._api_key}"
         return headers
 
-    def refresh(self) -> dict:
+    def refresh(self, from_date: str | None = None, to_date: str | None = None) -> dict:
         import requests
 
         url = f"{self._base_url}/cost-explorer/refresh"
+        # Empty body ({}) when no comparison dates are selected - matches
+        # exactly what every caller already sent before this feature
+        # existed, so the existing endpoint contract is unaffected.
+        payload = {}
+        if from_date:
+            payload["from_date"] = from_date
+        if to_date:
+            payload["to_date"] = to_date
         try:
             # A cost refresh runs several boto3 calls plus one Gemini call
             # synchronously (see api/cost_explorer_manager.py) - a longer
             # timeout than the simple delete-executions call needs.
-            response = requests.post(url, json={}, headers=self._headers(), timeout=60)
+            response = requests.post(url, json=payload, headers=self._headers(), timeout=60)
             response.raise_for_status()
             return response.json()
         except Exception as exc:  # noqa: BLE001 - surface as CostExplorerActionError to callers
@@ -161,5 +183,5 @@ class CostRefreshService:
     def is_live(self) -> bool:
         return isinstance(self._backend, RestCostExplorerBackend)
 
-    def refresh(self) -> dict:
-        return self._backend.refresh()
+    def refresh(self, from_date: str | None = None, to_date: str | None = None) -> dict:
+        return self._backend.refresh(from_date=from_date, to_date=to_date)

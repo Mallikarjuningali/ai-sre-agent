@@ -13,6 +13,7 @@ Purpose:
     never collide with (or be blocked by) an infra investigation.
 =========================================================
 """
+from __future__ import annotations
 
 import threading
 from datetime import datetime
@@ -38,7 +39,13 @@ class CostExplorerManager:
         self._lock = threading.Lock()
         self._busy = False
 
-    def refresh(self) -> dict:
+    def refresh(self, from_date: str | None = None, to_date: str | None = None) -> dict:
+        """from_date/to_date (optional "YYYY-MM-DD" strings, both
+        required together) request a Month/Period Comparison for that
+        user-selected range, in addition to the always-run default
+        current/previous cost data - see collector/cost_explorer.py's
+        main() for exactly how they're used. Omitted (the default): the
+        refresh behaves exactly as before this feature existed."""
 
         with self._lock:
             if self._busy:
@@ -52,7 +59,7 @@ class CostExplorerManager:
         try:
             logger.info("Cost Explorer refresh started")
 
-            cost_explorer_collector.main()
+            cost_explorer_collector.main(from_date=from_date, to_date=to_date)
 
             report = CostAnalyzer().run()
 

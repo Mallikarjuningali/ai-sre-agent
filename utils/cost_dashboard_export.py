@@ -9,7 +9,7 @@ Purpose:
     output/cost/context/ and output/cost/reports/, writes only
     output/cost/dashboard_feed/.
 
-    Seven feed files, one per dashboard concern, mirroring the existing
+    Eight feed files, one per dashboard concern, mirroring the existing
     infra dashboard's "one JSON file per concern" convention:
 
         summary.json    - current/previous cost, change, credits_total,
@@ -20,7 +20,14 @@ Purpose:
         services.json   - cost grouped by AWS service
         regions.json    - cost grouped by AWS region
         anomalies.json  - AWS Cost Anomaly Detection findings/status
-        report.json     - the Gemini cost-analysis report
+        comparison.json - the user-selected Month/Period Comparison
+                           (period_a/period_b/service_comparison/
+                           region_comparison/absolute_difference/
+                           change_percent), or null when no comparison
+                           has been requested yet
+        report.json     - the Gemini cost-analysis report (includes an
+                           additive comparison_analysis field when a
+                           comparison was part of this run)
 
     Safe to run standalone with no AWS/Gemini calls and no side effects:
 
@@ -119,6 +126,13 @@ def build_anomalies(context: dict) -> dict:
     return context.get("anomalies") or {"status": "unavailable", "reason": "No cost context available", "anomalies": []}
 
 
+def build_comparison(context: dict):
+    """None when no Month/Period Comparison has been requested yet - a
+    valid, honest "not run" state (see the dashboard's empty_state for
+    this), never a fabricated comparison."""
+    return context.get("comparison")
+
+
 def build_report(report: dict) -> dict:
     return report
 
@@ -136,6 +150,7 @@ def export() -> None:
     atomic_write_json(FEED_DIR / "services.json", build_services(context))
     atomic_write_json(FEED_DIR / "regions.json", build_regions(context))
     atomic_write_json(FEED_DIR / "anomalies.json", build_anomalies(context))
+    atomic_write_json(FEED_DIR / "comparison.json", build_comparison(context))
     atomic_write_json(FEED_DIR / "report.json", build_report(report))
 
 

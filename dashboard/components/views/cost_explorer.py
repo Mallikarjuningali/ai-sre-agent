@@ -7,7 +7,7 @@ and nothing here reads or displays infra investigation report data.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 import streamlit as st
 
@@ -21,12 +21,55 @@ from ..tables import render_table
 from ..topbar import page_header
 
 _REFRESH_ERROR_KEY = "cost_explorer_refresh_error"
+_DATE_RANGE_ERROR_KEY = "cost_explorer_date_range_error"
+_FROM_DATE_KEY = "cost_explorer_from_date"
+_TO_DATE_KEY = "cost_explorer_to_date"
+
+# UI-only initial widget default (days), mirroring the backend's own
+# default lookback window purely as a starting suggestion - the user can
+# freely pick any other range via the date pickers, and whatever they
+# pick is what's actually sent; this number is never part of the
+# comparison-period calculation itself.
+_DEFAULT_COMPARISON_DAYS = 14
+
+
+# ---------------------------------------------------------------------------
+# Comparison date-range picker
+# ---------------------------------------------------------------------------
+
+def _default_from_date() -> date:
+    return date.today() - timedelta(days=_DEFAULT_COMPARISON_DAYS - 1)
+
+
+def _default_to_date() -> date:
+    return date.today()
+
+
+def _render_date_range_picker() -> None:
+    col_from, col_to = st.columns(2)
+    with col_from:
+        st.date_input("From Date", value=_default_from_date(), key=_FROM_DATE_KEY)
+    with col_to:
+        st.date_input("To Date", value=_default_to_date(), key=_TO_DATE_KEY)
+
+
+def _render_date_range_error() -> None:
+    error = st.session_state.pop(_DATE_RANGE_ERROR_KEY, None)
+    if not error:
+        return
+    st.error(error)
 
 
 def render(services, config) -> None:
     page_header("Cost Explorer", "AWS billing and cost analysis for the current account")
 
     summary = services.cost_explorer.get_summary()
+
+    with card():
+        card_title("Cost Comparison Period", "Select a range to compare against the preceding period of equal length")
+        _render_date_range_picker()
+
+    st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
 
     col_meta, col_refresh = st.columns([4, 1])
     with col_meta:
@@ -40,6 +83,7 @@ def render(services, config) -> None:
             _handle_refresh(services)
 
     _render_refresh_error()
+    _render_date_range_error()
 
     st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
 
@@ -81,7 +125,13 @@ def render(services, config) -> None:
 
     st.markdown("<div style='height:1.1rem'></div>", unsafe_allow_html=True)
 
-    _render_ai_cost_analysis(services.cost_explorer.get_report())
+    report = services.cost_explorer.get_report()
+
+    _render_ai_cost_comparison(services.cost_explorer.get_comparison(), report)
+
+    st.markdown("<div style='height:1.1rem'></div>", unsafe_allow_html=True)
+
+    _render_ai_cost_analysis(report)
 
 
 # ---------------------------------------------------------------------------
@@ -301,6 +351,111 @@ def _render_credits(summary: dict, credits: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# AI Cost Comparison - user-selected Month/Period Comparison
+# ---------------------------------------------------------------------------
+
+def _format_period_label(period: dict) -> str:
+    return f"{_format_chart_date(period.get('from'))} – {_format_chart_date(period.get('to'))}"
+
+
+def _render_contributor_table(items: list, label_key: str, currency) -> None:
+    if not items:
+        empty_state(f"No {label_key} data for either period", "", "🧾")
+        return
+
+    top = items[:5]
+    rows = [
+        [
+            item.get(label_key) or "Unknown",
+            _format_money(item.get("period_a_cost"), currency),
+            _format_money(item.get("period_b_cost"), currency),
+            ("+" if (item.get("difference") or 0) >= 0 else "") + _format_money(item.get("difference"), currency),
+        ]
+        for item in top
+    ]
+    render_table([label_key.title(), "Selected Period", "Comparison Period", "Difference"], rows, "No data", "", "🧾")
+
+
+def _render_ai_cost_comparison(comparison: dict, report: dict) -> None:
+    with card():
+        card_title("AI Cost Comparison")
+
+        if not comparison or not comparison.get("period_a"):
+            empty_state(
+                "No comparison yet",
+                "Pick a From/To date range above and click Refresh",
+                "🔀",
+            )
+            return
+
+        period_a = comparison.get("period_a") or {}
+        period_b = comparison.get("period_b") or {}
+        absolute_difference = comparison.get("absolute_difference")
+        change_percent = comparison.get("change_percent")
+        currency = period_a.get("currency") or period_b.get("currency")
+
+        st.markdown(
+            f'<div style="font-size:13.5px; color:var(--text-secondary); margin-bottom:0.8rem;">'
+            f'{_format_period_label(period_a)} vs {_format_period_label(period_b)}</div>',
+            unsafe_allow_html=True,
+        )
+
+        cols = st.columns(3)
+        with cols[0]:
+            kpi_card("Selected Period", _format_money(period_a.get("total_cost"), currency), icon="🗓️", icon_kind="accent")
+        with cols[1]:
+            kpi_card("Comparison Period", _format_money(period_b.get("total_cost"), currency), icon="🗓️", icon_kind="blue")
+        with cols[2]:
+            if absolute_difference is None:
+                diff_label, diff_kind = "—", "accent"
+            else:
+                sign = "+" if absolute_difference >= 0 else ""
+                pct = f" ({sign}{change_percent:.1f}%)" if change_percent is not None else ""
+                diff_label = f"{sign}{_format_money(absolute_difference, currency)}{pct}"
+                diff_kind = "red" if absolute_difference > 0 else "green" if absolute_difference < 0 else "accent"
+            kpi_card("Difference", diff_label, icon="📊", icon_kind=diff_kind)
+
+        st.markdown("<div style='height:0.9rem'></div>", unsafe_allow_html=True)
+
+        col_svc, col_reg = st.columns(2)
+        with col_svc:
+            st.markdown(
+                '<div style="font-size:13px; font-weight:600; color:var(--text-primary); margin-bottom:0.4rem;">'
+                'Top Contributing Services</div>',
+                unsafe_allow_html=True,
+            )
+            _render_contributor_table(comparison.get("service_comparison") or [], "service", currency)
+        with col_reg:
+            st.markdown(
+                '<div style="font-size:13px; font-weight:600; color:var(--text-primary); margin-bottom:0.4rem;">'
+                'Top Contributing Regions</div>',
+                unsafe_allow_html=True,
+            )
+            _render_contributor_table(comparison.get("region_comparison") or [], "region", currency)
+
+        analysis = (report or {}).get("comparison_analysis")
+        if analysis:
+            st.markdown("<div style='height:0.9rem'></div>", unsafe_allow_html=True)
+            st.markdown(
+                '<div style="font-size:13px; font-weight:600; color:var(--text-primary); margin-bottom:0.4rem;">'
+                'AI Analysis</div>',
+                unsafe_allow_html=True,
+            )
+            explanation = analysis.get("explanation") if isinstance(analysis, dict) else str(analysis)
+            st.markdown(
+                f"""
+                <div style="background:var(--bg-elevated); border:1px solid var(--border-subtle); border-radius:var(--radius-sm);
+                            padding:0.9rem 1.1rem; font-size:14px; color:var(--text-primary); line-height:1.5;">
+                  {explanation or "No AI explanation available."}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        else:
+            st.caption("Gemini analysis for this comparison will appear here after the next Refresh.")
+
+
+# ---------------------------------------------------------------------------
 # AI Cost Analysis - separate from the infra report UI
 # ---------------------------------------------------------------------------
 
@@ -380,16 +535,27 @@ def _render_ai_cost_analysis(report: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def _handle_refresh(services) -> None:
+    from_date = st.session_state.get(_FROM_DATE_KEY)
+    to_date = st.session_state.get(_TO_DATE_KEY)
+
+    if from_date and to_date and from_date > to_date:
+        st.session_state[_DATE_RANGE_ERROR_KEY] = "From Date must be on or before To Date."
+        st.rerun()
+        return
+
+    from_date_str = from_date.isoformat() if from_date else None
+    to_date_str = to_date.isoformat() if to_date else None
+
     try:
         with st.spinner("Querying AWS Cost Explorer and running Gemini analysis…"):
-            services.cost_refresh.refresh()
+            services.cost_refresh.refresh(from_date=from_date_str, to_date=to_date_str)
     except CostExplorerActionError as exc:
         st.session_state[_REFRESH_ERROR_KEY] = str(exc)
         st.rerun()
         return
 
     # A fresh feed was just published on the backend - drop every cached
-    # read so this rerun pulls the new summary/history/services/etc.
+    # read so this rerun pulls the new summary/history/services/comparison/etc.
     invalidate()
     st.success("Cost Explorer data refreshed.")
     st.rerun()

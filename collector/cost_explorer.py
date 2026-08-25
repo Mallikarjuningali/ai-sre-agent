@@ -17,7 +17,7 @@ Purpose:
 =========================================================
 """
 
-from datetime import datetime, timedelta, UTC
+from datetime import date, datetime, timedelta, UTC
 
 from utils.cost_writer import write_json
 from utils.aws_clients import get_ce_client
@@ -52,20 +52,74 @@ def _error_code(exc):
     return (response.get("Error") or {}).get("Code")
 
 
+def _is_complete_calendar_month(period_start, period_end):
+    """True when [period_start, period_end) spans exactly one full
+    calendar month: period_start is the 1st of a month, and period_end
+    (exclusive) is the 1st of the following month. Pure date arithmetic
+    via Python's date type - no hardcoded month names or day counts, so
+    it's automatically correct for 28/29/30/31-day months and leap
+    years."""
+
+    if period_start.day != 1:
+        return False
+
+    if period_start.month == 12:
+        next_month_first = date(period_start.year + 1, 1, 1)
+    else:
+        next_month_first = date(period_start.year, period_start.month + 1, 1)
+
+    return period_end == next_month_first
+
+
+def _comparison_period(period_start, period_end):
+    """Given any period [period_start, period_end) (end-exclusive),
+    returns the comparison period to use - the single shared calculation
+    used both by the default current-vs-previous comparison below and by
+    the user-selected Month/Period Comparison feature. No duplicate
+    date-calculation logic exists anywhere else in this module.
+
+    - If the selected period is a COMPLETE calendar month, the
+      comparison is the immediately preceding calendar month, whatever
+      its actual length is (28/29/30/31 days) - determined purely from
+      the real calendar, never a hardcoded month length or name.
+    - Otherwise, the comparison is the immediately preceding period of
+      the exact same duration (in days) as the selection - the original
+      rule, unchanged for every non-full-month case."""
+
+    duration = (period_end - period_start).days
+
+    if duration <= 0:
+        raise ValueError("period_end must be after period_start")
+
+    if _is_complete_calendar_month(period_start, period_end):
+
+        if period_start.month == 1:
+            comparison_start = date(period_start.year - 1, 12, 1)
+        else:
+            comparison_start = date(period_start.year, period_start.month - 1, 1)
+
+        return comparison_start, period_start
+
+    comparison_end = period_start
+    comparison_start = period_start - timedelta(days=duration)
+
+    return comparison_start, comparison_end
+
+
 def _period_bounds():
     """Current period: the last COST_LOOKBACK_DAYS days, ending today.
-    Previous period: the equal-length window immediately before it - both
-    windows entirely driven by the one COST_LOOKBACK_DAYS constant, no
-    calendar-month assumptions. Cost Explorer's End date is exclusive, so
-    current_end is "tomorrow" to include all of "today"."""
+    Previous period: the equal-length window immediately before it, via
+    the shared _comparison_period() helper - both windows entirely
+    driven by the one COST_LOOKBACK_DAYS constant, no calendar-month
+    assumptions. Cost Explorer's End date is exclusive, so current_end
+    is "tomorrow" to include all of "today"."""
 
     today = datetime.now(UTC).date()
 
     current_end = today + timedelta(days=1)
     current_start = today - timedelta(days=COST_LOOKBACK_DAYS - 1)
 
-    previous_end = current_start
-    previous_start = current_start - timedelta(days=COST_LOOKBACK_DAYS)
+    previous_start, previous_end = _comparison_period(current_start, current_end)
 
     return {
         "current_start": current_start,
@@ -273,6 +327,46 @@ def get_credit_history(start_date, end_date):
         logger.error(f"get_credit_history failed: {exc}")
 
         return [], None, None
+
+
+# =========================================================
+# Full period data bundle - for the Month/Period Comparison feature.
+# Reuses every existing per-metric function below (get_total_cost,
+# get_daily_history, get_service_breakdown, get_region_breakdown,
+# get_credit_history) rather than reimplementing any of them - this is
+# the ONLY place those five are called together for an arbitrary
+# caller-supplied period.
+# =========================================================
+
+def get_period_data(start_date, end_date):
+    """Fetches the complete Cost Explorer bundle (total cost, currency,
+    daily history, service/region breakdown, credits) for one
+    [start_date, end_date) window, by calling the existing functions -
+    no new AWS query shape is introduced here. Raw facts only; gross_cost
+    is derived downstream in the context builder, same as the top-level
+    context already does, so there's exactly one gross_cost formula in
+    the whole pipeline."""
+
+    total_cost, currency = get_total_cost(start_date, end_date)
+    daily_history = get_daily_history(start_date, end_date)
+    service_breakdown = get_service_breakdown(start_date, end_date)
+    region_breakdown = get_region_breakdown(start_date, end_date)
+    credit_history, credit_total, credit_currency = get_credit_history(start_date, end_date)
+
+    return {
+        "from": _iso_date(start_date),
+        "to": _iso_date(end_date - timedelta(days=1)),
+        "total_cost": total_cost,
+        "currency": currency or credit_currency,
+        "daily_history": daily_history,
+        "service_breakdown": service_breakdown,
+        "region_breakdown": region_breakdown,
+        "credits": {
+            "total": credit_total,
+            "currency": credit_currency,
+            "history": credit_history,
+        },
+    }
 
 
 # =========================================================
@@ -498,7 +592,16 @@ def get_anomalies(start_date, end_date):
 # Main
 # =========================================================
 
-def main():
+def main(from_date=None, to_date=None):
+    """from_date/to_date (optional "YYYY-MM-DD" strings, both required
+    together) are the user-selected Month/Period Comparison range from
+    the dashboard's date pickers - entirely dynamic, never a hardcoded
+    month. When supplied, a "comparison" block is added to the output
+    with two full period bundles (the selected period and, via the same
+    _comparison_period() helper the default current/previous comparison
+    already uses, the immediately preceding period of equal length).
+    When omitted (the default, unchanged path), no comparison is
+    fetched and no extra AWS calls are made."""
 
     logger.info("Starting Cost Explorer Collector...")
 
@@ -526,6 +629,25 @@ def main():
     anomaly_end_date = bounds["current_end"] - timedelta(days=1)
 
     anomalies = get_anomalies(bounds["current_start"], anomaly_end_date)
+
+    comparison = None
+
+    if from_date and to_date:
+
+        # User-selected "From Date" is inclusive; GetCostAndUsage's End
+        # is exclusive, so period_a_end = to_date + 1 day - exactly the
+        # rule the dashboard's date pickers document, dynamically
+        # computed from whatever the user actually picked, never today
+        # or a specific month.
+        period_a_start = datetime.strptime(from_date, "%Y-%m-%d").date()
+        period_a_end = datetime.strptime(to_date, "%Y-%m-%d").date() + timedelta(days=1)
+
+        period_b_start, period_b_end = _comparison_period(period_a_start, period_a_end)
+
+        comparison = {
+            "period_a": get_period_data(period_a_start, period_a_end),
+            "period_b": get_period_data(period_b_start, period_b_end),
+        }
 
     data = {
 
@@ -566,6 +688,8 @@ def main():
         "region_breakdown": region_breakdown,
 
         "anomalies": anomalies,
+
+        "comparison": comparison,
 
     }
 

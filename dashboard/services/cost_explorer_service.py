@@ -9,22 +9,31 @@ Local(Unavailable)/Rest + factory pattern as ExecutionService -
 triggering a real AWS Cost Explorer refresh always goes through the
 FastAPI backend, never boto3 directly from the dashboard.
 
-Contract (six separate JSON keys, published by
-utils/cost_dashboard_export.py -> output/cost/dashboard_feed/*.json, and
-served in REST mode by api/app.py's matching /cost-explorer/* routes -
-the keys below are deliberately the same path shape as those routes so
-RestApiDataSource.read_json(key) hits them with no translation):
+Contract (published by utils/cost_dashboard_export.py ->
+output/cost/dashboard_feed/*.json, and served in REST mode by
+api/app.py's matching /cost-explorer/* routes - the keys below are
+deliberately the same path shape as those routes so
+RestApiDataSource.read_json(key) hits them with no translation). See
+context/cost_context_builder.py's docstring for the full data model
+these are all built from (current_period/previous_period/change/
+service_comparison/region_comparison/anomalies/comparison, each period
+being {from, to, currency, gross_cost, credits, net_cost, daily_history,
+service_breakdown, region_breakdown} with service_breakdown/
+region_breakdown entries shaped {service|region, gross_cost, credits,
+net_cost, currency}):
 
-    cost-explorer/summary   -> {total_cost, previous_cost, change_percent, currency, period,
-                                generated_at, credits_total, gross_cost}
-                               (credits_total/gross_cost are additive - the rest is unchanged)
+    cost-explorer/summary   -> {currency, period, generated_at,
+                                 current_period, previous_period, change}
     cost-explorer/history   -> {daily_history: [[date, value], ...], currency}
-    cost-explorer/credits   -> {total, currency, history: [[date, amount], ...]}
-    cost-explorer/services  -> {service_breakdown: [{service, cost, currency}], currency}
-    cost-explorer/regions   -> {region_breakdown: [{region, cost, currency}], currency}
+    cost-explorer/credits   -> {total, currency, history, by_service, by_region,
+                                 resource_level_attribution_available: false,
+                                 resource_level_attribution_note}
+    cost-explorer/services  -> {service_breakdown, service_comparison, currency}
+    cost-explorer/regions   -> {region_breakdown, region_comparison, currency, region_credit_note}
     cost-explorer/anomalies -> {status, reason, anomalies: [...]}
-    cost-explorer/comparison -> {period_a, period_b, service_comparison, region_comparison,
-                                 absolute_difference, change_percent} or null (no comparison run yet)
+    cost-explorer/comparison -> {selected_period, comparison_period, difference,
+                                 percentage_change, service_comparison, region_comparison,
+                                 credit_comparison, anomaly_comparison} or null (no comparison run yet)
     cost-explorer/report    -> the Gemini cost report (severity/summary/root_cause/evidence/recommendations/...,
                                plus an additive comparison_analysis when a comparison was part of this run)
 """
@@ -46,15 +55,31 @@ ANOMALIES_KEY = "cost-explorer/anomalies"
 COMPARISON_KEY = "cost-explorer/comparison"
 REPORT_KEY = "cost-explorer/report"
 
+_EMPTY_PERIOD: dict[str, Any] = {
+    "from": None, "to": None, "currency": None, "gross_cost": None,
+    "credits": {"total": None, "currency": None, "history": []},
+    "net_cost": None, "daily_history": [], "service_breakdown": [], "region_breakdown": [],
+}
+_EMPTY_CHANGE: dict[str, Any] = {
+    "gross_cost_change": None, "gross_cost_change_percent": None,
+    "credits_change": None, "net_cost_change": None, "net_cost_change_percent": None,
+}
 _EMPTY_SUMMARY: dict[str, Any] = {
-    "total_cost": None, "previous_cost": None, "change_percent": None,
     "currency": None, "period": {}, "generated_at": None,
-    "credits_total": None, "gross_cost": None,
+    "current_period": dict(_EMPTY_PERIOD), "previous_period": dict(_EMPTY_PERIOD),
+    "change": dict(_EMPTY_CHANGE),
 }
 _EMPTY_HISTORY: dict[str, Any] = {"daily_history": [], "currency": None}
-_EMPTY_CREDITS: dict[str, Any] = {"total": None, "currency": None, "history": []}
-_EMPTY_SERVICES: dict[str, Any] = {"service_breakdown": [], "currency": None}
-_EMPTY_REGIONS: dict[str, Any] = {"region_breakdown": [], "currency": None}
+_EMPTY_CREDITS: dict[str, Any] = {
+    "total": None, "currency": None, "history": [], "by_service": [], "by_region": [],
+    "resource_level_attribution_available": False,
+    "resource_level_attribution_note": (
+        "AWS Cost Explorer reports these credits at the service/region level. "
+        "Individual resource attribution is not available from the current billing data."
+    ),
+}
+_EMPTY_SERVICES: dict[str, Any] = {"service_breakdown": [], "service_comparison": [], "currency": None}
+_EMPTY_REGIONS: dict[str, Any] = {"region_breakdown": [], "region_comparison": [], "currency": None, "region_credit_note": None}
 _EMPTY_ANOMALIES: dict[str, Any] = {
     "status": "unavailable", "reason": "No cost data published yet", "anomalies": [],
 }

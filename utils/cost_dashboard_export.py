@@ -10,21 +10,32 @@ Purpose:
     output/cost/dashboard_feed/.
 
     Eight feed files, one per dashboard concern, mirroring the existing
-    infra dashboard's "one JSON file per concern" convention:
+    infra dashboard's "one JSON file per concern" convention. All built
+    from context/cost_context_builder.py's current_period/previous_period/
+    change/service_comparison/region_comparison/anomalies/comparison
+    shape - see that module's docstring for the full data model.
 
-        summary.json    - current/previous cost, change, credits_total,
-                           gross_cost, currency, period (all additive -
-                           the original fields are unchanged)
-        history.json    - daily cost datapoints
-        credits.json    - AWS credit total/history (RECORD_TYPE=Credit)
-        services.json   - cost grouped by AWS service
-        regions.json    - cost grouped by AWS region
-        anomalies.json  - AWS Cost Anomaly Detection findings/status
+        summary.json    - current_period (gross/credits/net), previous_period,
+                           change, currency, period, generated_at
+        history.json    - current period's daily cost datapoints
+        credits.json    - current period's credit total/history, PLUS
+                           service/region-level credit attribution
+                           (only entries where a real credit exists) and
+                           an explicit note that resource-level
+                           attribution is not available from AWS
+        services.json   - current period's service breakdown
+                           (gross/credits/net per service) plus
+                           service_comparison (vs previous_period, for a
+                           "Change" column)
+        regions.json    - same as services.json, grouped by region
+        anomalies.json  - AWS Cost Anomaly Detection findings/status for
+                           the current period
         comparison.json - the user-selected Month/Period Comparison
-                           (period_a/period_b/service_comparison/
-                           region_comparison/absolute_difference/
-                           change_percent), or null when no comparison
-                           has been requested yet
+                           (selected_period/comparison_period/difference/
+                           percentage_change/service_comparison/
+                           region_comparison/credit_comparison/
+                           anomaly_comparison), or null when no
+                           comparison has been requested yet
         report.json     - the Gemini cost-analysis report (includes an
                            additive comparison_analysis field when a
                            comparison was part of this run)
@@ -47,6 +58,22 @@ OUTPUT_DIR = Path("output/cost")
 CONTEXT_DIR = OUTPUT_DIR / "context"
 REPORTS_DIR = OUTPUT_DIR / "reports"
 FEED_DIR = OUTPUT_DIR / "dashboard_feed"
+
+# AWS Cost Explorer's own, real limitation - stated once here, echoed
+# verbatim into every feed file where resource-level attribution might
+# otherwise be implied, rather than fabricated or silently omitted. See
+# collector/cost_explorer.py's get_service_credit_breakdown() docstring
+# for the full technical reasoning.
+RESOURCE_LEVEL_CREDIT_NOTE = (
+    "AWS Cost Explorer reports these credits at the service/region level. "
+    "Individual resource attribution is not available from the current billing data."
+)
+
+_EMPTY_PERIOD = {
+    "from": None, "to": None, "currency": None, "gross_cost": None,
+    "credits": {"total": None, "currency": None, "history": []},
+    "net_cost": None, "daily_history": [], "service_breakdown": [], "region_breakdown": [],
+}
 
 
 def read_json(path: Path):
@@ -78,47 +105,67 @@ def load_report() -> dict:
 
 
 def build_summary(context: dict, generated_at: str) -> dict:
-    credits = context.get("credits") or {}
+    current_period = context.get("current_period") or dict(_EMPTY_PERIOD)
+    previous_period = context.get("previous_period") or dict(_EMPTY_PERIOD)
+    change = context.get("change") or {}
+
     return {
-        "total_cost": context.get("total_cost"),
-        "previous_cost": context.get("previous_cost"),
-        "change_percent": context.get("change_percent"),
         "currency": context.get("currency"),
         "period": context.get("period") or {},
         "generated_at": generated_at,
-        # Additive - existing fields above are byte-for-byte unchanged.
-        "credits_total": credits.get("total"),
-        "gross_cost": context.get("gross_cost"),
+        "current_period": current_period,
+        "previous_period": previous_period,
+        "change": change,
     }
 
 
 def build_history(context: dict) -> dict:
+    current_period = context.get("current_period") or {}
     return {
-        "daily_history": context.get("daily_history") or [],
-        "currency": context.get("currency"),
+        "daily_history": current_period.get("daily_history") or [],
+        "currency": current_period.get("currency") or context.get("currency"),
     }
 
 
+def _credit_entries_only(breakdown: list, label_key: str) -> list:
+    """Filters a merged gross/credits/net breakdown down to entries that
+    actually had a nonzero credit - the Credits section shows "which
+    services/regions had credits applied," not the entire cost
+    breakdown (that's what services.json/regions.json are for)."""
+    return [item for item in (breakdown or []) if item.get(label_key) and item.get("credits")]
+
+
 def build_credits(context: dict) -> dict:
-    credits = context.get("credits") or {}
+    current_period = context.get("current_period") or {}
+    credits = current_period.get("credits") or {"total": None, "currency": None, "history": []}
+
     return {
         "total": credits.get("total"),
-        "currency": credits.get("currency"),
+        "currency": credits.get("currency") or current_period.get("currency"),
         "history": credits.get("history") or [],
+        "by_service": _credit_entries_only(current_period.get("service_breakdown"), "service"),
+        "by_region": _credit_entries_only(current_period.get("region_breakdown"), "region"),
+        "resource_level_attribution_available": False,
+        "resource_level_attribution_note": RESOURCE_LEVEL_CREDIT_NOTE,
     }
 
 
 def build_services(context: dict) -> dict:
+    current_period = context.get("current_period") or {}
     return {
-        "service_breakdown": context.get("service_breakdown") or [],
-        "currency": context.get("currency"),
+        "service_breakdown": current_period.get("service_breakdown") or [],
+        "service_comparison": context.get("service_comparison") or [],
+        "currency": current_period.get("currency") or context.get("currency"),
     }
 
 
 def build_regions(context: dict) -> dict:
+    current_period = context.get("current_period") or {}
     return {
-        "region_breakdown": context.get("region_breakdown") or [],
-        "currency": context.get("currency"),
+        "region_breakdown": current_period.get("region_breakdown") or [],
+        "region_comparison": context.get("region_comparison") or [],
+        "currency": current_period.get("currency") or context.get("currency"),
+        "region_credit_note": RESOURCE_LEVEL_CREDIT_NOTE,
     }
 
 

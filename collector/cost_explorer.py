@@ -330,52 +330,15 @@ def get_credit_history(start_date, end_date):
 
 
 # =========================================================
-# Full period data bundle - for the Month/Period Comparison feature.
-# Reuses every existing per-metric function below (get_total_cost,
-# get_daily_history, get_service_breakdown, get_region_breakdown,
-# get_credit_history) rather than reimplementing any of them - this is
-# the ONLY place those five are called together for an arbitrary
-# caller-supplied period.
-# =========================================================
-
-def get_period_data(start_date, end_date):
-    """Fetches the complete Cost Explorer bundle (total cost, currency,
-    daily history, service/region breakdown, credits) for one
-    [start_date, end_date) window, by calling the existing functions -
-    no new AWS query shape is introduced here. Raw facts only; gross_cost
-    is derived downstream in the context builder, same as the top-level
-    context already does, so there's exactly one gross_cost formula in
-    the whole pipeline."""
-
-    total_cost, currency = get_total_cost(start_date, end_date)
-    daily_history = get_daily_history(start_date, end_date)
-    service_breakdown = get_service_breakdown(start_date, end_date)
-    region_breakdown = get_region_breakdown(start_date, end_date)
-    credit_history, credit_total, credit_currency = get_credit_history(start_date, end_date)
-
-    return {
-        "from": _iso_date(start_date),
-        "to": _iso_date(end_date - timedelta(days=1)),
-        "total_cost": total_cost,
-        "currency": currency or credit_currency,
-        "daily_history": daily_history,
-        "service_breakdown": service_breakdown,
-        "region_breakdown": region_breakdown,
-        "credits": {
-            "total": credit_total,
-            "currency": credit_currency,
-            "history": credit_history,
-        },
-    }
-
-
-# =========================================================
 # Service / region breakdown
 # =========================================================
 
 def get_service_breakdown(start_date, end_date):
     """Real AWS cost grouped by Cost Explorer's own SERVICE dimension -
-    never a hardcoded service list, only whatever AWS actually billed."""
+    never a hardcoded service list, only whatever AWS actually billed.
+    This is the NET figure (every record type, including Credit records
+    tagged to that service) - see get_service_credit_breakdown() for the
+    credit-only isolation needed to recover gross cost per service."""
 
     return _grouped_cost(start_date, end_date, "SERVICE", "service")
 
@@ -386,7 +349,34 @@ def get_region_breakdown(start_date, end_date):
     return _grouped_cost(start_date, end_date, "REGION", "region")
 
 
-def _grouped_cost(start_date, end_date, dimension_key, label_key):
+def get_service_credit_breakdown(start_date, end_date):
+    """Real AWS credit amounts grouped by SERVICE - the same mechanism
+    get_credit_history() uses at the account level (RECORD_TYPE=Credit
+    filter on GetCostAndUsage), just also grouped by dimension. This is a
+    genuinely supported Cost Explorer capability (same API call, no new
+    AWS permission) - AWS's billing data attaches a SERVICE value to
+    Credit-type records the same way it does to Usage-type records, so
+    this reliably answers "which service's credits were these" at the
+    account's own billing granularity. It does NOT and cannot answer
+    "which EC2 instance" - see get_region_credit_breakdown()'s docstring
+    for why resource-level attribution is a separate, unsupported
+    question this function makes no attempt to answer."""
+
+    return _grouped_cost(start_date, end_date, "SERVICE", "service", record_type="Credit")
+
+
+def get_region_credit_breakdown(start_date, end_date):
+    """Same mechanism as get_service_credit_breakdown() but grouped by
+    REGION. Some credit types (e.g. enterprise/support credits) may not
+    carry a specific region in AWS's own billing data - if so, AWS simply
+    won't return a group for them here (or will group them under
+    whatever generic value AWS itself recorded, e.g. "NoRegion"); nothing
+    is inferred or redistributed by this code."""
+
+    return _grouped_cost(start_date, end_date, "REGION", "region", record_type="Credit")
+
+
+def _grouped_cost(start_date, end_date, dimension_key, label_key, record_type=None):
     """Paginated via NextPageToken - GetCostAndUsage's actual request/
     response field name (confirmed against the boto3 `ce` API, not
     guessed). Keeps requesting the next page until AWS stops returning a
@@ -394,7 +384,22 @@ def _grouped_cost(start_date, end_date, dimension_key, label_key):
     time, so single-page behavior is unchanged. Every page's Groups are
     accumulated into the same running `totals` dict, so results from
     every page are summed - never dropped, never double counted even if
-    a group were ever split across pages."""
+    a group were ever split across pages.
+
+    record_type: None fetches every record type (the net-of-credits
+    figure per dimension value - AWS has no way to exclude a record type
+    from an unfiltered query); "Credit" isolates just RECORD_TYPE=Credit
+    records, the same documented mechanism get_credit_history() already
+    uses at the account level, just additionally grouped by dimension_key.
+
+    Keeps every group AWS actually returned - including one whose total
+    rounds to exactly 0 (a service/region fully offset by a credit in the
+    same period) or negative (credits exceeding usage for that dimension
+    value). AWS does not return a group at all for a dimension value with
+    zero billing activity of any kind, so nothing here is fabricated by
+    not filtering; the previous behavior (dropping any non-positive
+    total) is what caused fully-credited services/regions to silently
+    disappear instead of showing their real gross/credit/net story."""
 
     try:
         totals = {}
@@ -409,6 +414,9 @@ def _grouped_cost(start_date, end_date, dimension_key, label_key):
                 "Metrics": ["UnblendedCost"],
                 "GroupBy": [{"Type": "DIMENSION", "Key": dimension_key}],
             }
+
+            if record_type:
+                request_kwargs["Filter"] = {"Dimensions": {"Key": "RECORD_TYPE", "Values": [record_type]}}
 
             if next_page_token:
                 request_kwargs["NextPageToken"] = next_page_token
@@ -447,18 +455,63 @@ def _grouped_cost(start_date, end_date, dimension_key, label_key):
         breakdown = [
             {label_key: name, "cost": round(amount, 2), "currency": currency}
             for name, amount in totals.items()
-            if amount > 0
         ]
 
-        breakdown.sort(key=lambda item: item["cost"], reverse=True)
+        breakdown.sort(key=lambda item: abs(item["cost"]), reverse=True)
 
         return breakdown
 
     except Exception as exc:
 
-        logger.error(f"_grouped_cost({dimension_key}) failed: {exc}")
+        logger.error(f"_grouped_cost({dimension_key}, record_type={record_type}) failed: {exc}")
 
         return []
+
+
+# =========================================================
+# Full period data bundle - the single per-period fetch used for the
+# always-computed current/previous periods AND the optional
+# user-selected Month/Period Comparison. Reuses every per-metric
+# function above rather than reimplementing any of them - this is the
+# ONLY place they're called together for an arbitrary caller-supplied
+# period.
+# =========================================================
+
+def get_period_data(start_date, end_date):
+    """Fetches the complete Cost Explorer bundle (total cost, currency,
+    daily history, service/region net AND credit breakdown, credits) for
+    one [start_date, end_date) window, by calling the existing functions
+    - no new AWS query shape is introduced here beyond what
+    get_service_credit_breakdown/get_region_credit_breakdown already add.
+    Raw facts only; gross_cost per service/region is derived downstream
+    in the context builder (net - credits), same convention the
+    account-level gross_cost already used - exactly one gross_cost
+    formula in the whole pipeline, applied at every level."""
+
+    total_cost, currency = get_total_cost(start_date, end_date)
+    daily_history = get_daily_history(start_date, end_date)
+    service_breakdown = get_service_breakdown(start_date, end_date)
+    service_credit_breakdown = get_service_credit_breakdown(start_date, end_date)
+    region_breakdown = get_region_breakdown(start_date, end_date)
+    region_credit_breakdown = get_region_credit_breakdown(start_date, end_date)
+    credit_history, credit_total, credit_currency = get_credit_history(start_date, end_date)
+
+    return {
+        "from": _iso_date(start_date),
+        "to": _iso_date(end_date - timedelta(days=1)),
+        "total_cost": total_cost,
+        "currency": currency or credit_currency,
+        "daily_history": daily_history,
+        "service_breakdown": service_breakdown,
+        "service_credit_breakdown": service_credit_breakdown,
+        "region_breakdown": region_breakdown,
+        "region_credit_breakdown": region_credit_breakdown,
+        "credits": {
+            "total": credit_total,
+            "currency": credit_currency,
+            "history": credit_history,
+        },
+    }
 
 
 # =========================================================
@@ -473,7 +526,7 @@ def get_anomalies(start_date, end_date):
     - "none_found": monitors exist, GetAnomalies returned nothing for
       this window - i.e. AWS actually checked and found nothing.
     - "found": real AWS-reported anomalies, their actual
-      impact/score/service/dates preserved as-is.
+      impact/score/service/region/dates/monitor preserved as-is.
     - "unsupported_range": AWS rejected the requested date window as
       invalid for anomaly detection (e.g. end_date beyond AWS's latest
       supported detection date) - a legitimate condition, distinct from
@@ -490,7 +543,11 @@ def get_anomalies(start_date, end_date):
     NextPageToken (their actual boto3 request/response field, same as
     GetCostAndUsage) until AWS stops returning one - so an account with
     more than one page of monitors or anomalies is never silently
-    truncated to the first page."""
+    truncated to the first page.
+
+    AWS does not provide a severity classification for an anomaly - only
+    anomaly_score/max_anomaly_score and impact figures are real fields;
+    no severity bucket is invented anywhere in this pipeline."""
 
     try:
         monitors = []
@@ -524,6 +581,15 @@ def get_anomalies(start_date, end_date):
             "reason": "No AWS Cost Anomaly monitors configured",
             "anomalies": [],
         }
+
+    # ARN -> Name, so each anomaly below can carry its monitor's real
+    # name alongside its ARN without a second AWS call - monitors was
+    # already fetched above for the not_configured check.
+    monitor_names = {
+        monitor.get("MonitorArn"): monitor.get("MonitorName")
+        for monitor in monitors
+        if monitor.get("MonitorArn")
+    }
 
     try:
         raw_anomalies = []
@@ -572,16 +638,44 @@ def get_anomalies(start_date, end_date):
 
         impact = anomaly.get("Impact") or {}
         score = anomaly.get("AnomalyScore") or {}
+        monitor_arn = anomaly.get("MonitorArn")
+
+        # RootCauses is where AWS actually attaches region/linked-account
+        # detail for an anomaly - DimensionValue above is just the
+        # monitor's own grouping key (often the service name), not a
+        # region. A single anomaly can have more than one root cause
+        # (e.g. it spans regions or linked accounts) - every one AWS
+        # returned is kept in root_causes; "region" below is only a
+        # convenience read of the first entry for simple display and
+        # must not be read as "the only region involved".
+        root_causes = [
+            {
+                "service": cause.get("Service"),
+                "region": cause.get("Region"),
+                "linked_account": cause.get("LinkedAccount"),
+                "linked_account_name": cause.get("LinkedAccountName"),
+                "usage_type": cause.get("UsageType"),
+                "contribution": (cause.get("Impact") or {}).get("Contribution"),
+            }
+            for cause in (anomaly.get("RootCauses") or [])
+        ]
 
         anomalies.append({
             "anomaly_id": anomaly.get("AnomalyId"),
             "service": anomaly.get("DimensionValue"),
+            "region": root_causes[0]["region"] if root_causes else None,
             "start_date": anomaly.get("AnomalyStartDate"),
             "end_date": anomaly.get("AnomalyEndDate"),
             "total_impact": impact.get("TotalImpact"),
             "max_impact": impact.get("MaxImpact"),
             "impact_percentage": impact.get("TotalImpactPercentage"),
+            "total_actual_spend": impact.get("TotalActualSpend"),
+            "total_expected_spend": impact.get("TotalExpectedSpend"),
             "anomaly_score": score.get("CurrentScore"),
+            "max_anomaly_score": score.get("MaxScore"),
+            "monitor_arn": monitor_arn,
+            "monitor_name": monitor_names.get(monitor_arn),
+            "root_causes": root_causes,
             "feedback": anomaly.get("Feedback"),
         })
 
@@ -601,23 +695,21 @@ def main(from_date=None, to_date=None):
     _comparison_period() helper the default current/previous comparison
     already uses, the immediately preceding period of equal length).
     When omitted (the default, unchanged path), no comparison is
-    fetched and no extra AWS calls are made."""
+    fetched and no extra AWS calls are made.
+
+    current/previous are both full get_period_data() bundles (gross-
+    capable: net + credit breakdown per service/region, daily history,
+    credits) - not just a single total each, as before - so the context
+    builder can derive gross/credits/net at the service and region level
+    for both periods, and so "Change" columns in the redesigned Cost
+    Explorer page have real previous-period data to compare against."""
 
     logger.info("Starting Cost Explorer Collector...")
 
     bounds = _period_bounds()
 
-    current_total, currency = get_total_cost(bounds["current_start"], bounds["current_end"])
-    previous_total, previous_currency = get_total_cost(bounds["previous_start"], bounds["previous_end"])
-
-    daily_history = get_daily_history(bounds["current_start"], bounds["current_end"])
-
-    credit_history, credit_total, credit_currency = get_credit_history(
-        bounds["current_start"], bounds["current_end"]
-    )
-
-    service_breakdown = get_service_breakdown(bounds["current_start"], bounds["current_end"])
-    region_breakdown = get_region_breakdown(bounds["current_start"], bounds["current_end"])
+    current = get_period_data(bounds["current_start"], bounds["current_end"])
+    previous = get_period_data(bounds["previous_start"], bounds["previous_end"])
 
     # GetAnomalies' DateInterval.EndDate has a different constraint than
     # GetCostAndUsage's exclusive End: AWS caps it at the "latest
@@ -644,9 +736,21 @@ def main(from_date=None, to_date=None):
 
         period_b_start, period_b_end = _comparison_period(period_a_start, period_a_end)
 
+        period_a = get_period_data(period_a_start, period_a_end)
+        period_b = get_period_data(period_b_start, period_b_end)
+
+        # GetAnomalies has its own supported-range constraint (see
+        # anomaly_end_date above) - a comparison period far in the past
+        # will legitimately come back "unsupported_range"; that is a
+        # real, honest AWS answer, not a bug, and is surfaced as-is.
+        period_a_anomaly_end = min(period_a_end, bounds["current_end"]) - timedelta(days=1)
+        period_b_anomaly_end = min(period_b_end, bounds["current_end"]) - timedelta(days=1)
+
         comparison = {
-            "period_a": get_period_data(period_a_start, period_a_end),
-            "period_b": get_period_data(period_b_start, period_b_end),
+            "period_a": period_a,
+            "period_b": period_b,
+            "period_a_anomalies": get_anomalies(period_a_start, period_a_anomaly_end),
+            "period_b_anomalies": get_anomalies(period_b_start, period_b_anomaly_end),
         }
 
     data = {
@@ -655,7 +759,7 @@ def main(from_date=None, to_date=None):
 
         "timestamp": datetime.now(UTC).isoformat(),
 
-        "currency": currency or previous_currency,
+        "currency": current["currency"] or previous["currency"],
 
         "period": {
 
@@ -667,25 +771,9 @@ def main(from_date=None, to_date=None):
 
         },
 
-        "total_cost": current_total,
+        "current_period": current,
 
-        "previous_cost": previous_total,
-
-        "daily_history": daily_history,
-
-        "credits": {
-
-            "total": credit_total,
-
-            "currency": credit_currency,
-
-            "history": credit_history,
-
-        },
-
-        "service_breakdown": service_breakdown,
-
-        "region_breakdown": region_breakdown,
+        "previous_period": previous,
 
         "anomalies": anomalies,
 

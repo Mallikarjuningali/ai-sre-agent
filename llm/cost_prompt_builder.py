@@ -76,12 +76,16 @@ Field notes:
   context.change.net_cost_change_percent, currency =
   context.currency, period = context.period - echo these actual values,
   do not recompute a different figure.
-- top_cost_drivers: the services/regions that most explain the observed
-  change, drawn only from context.current_period.service_breakdown /
-  region_breakdown (each entry already has gross_cost, credits, net_cost
-  - a service with net_cost 0 and gross_cost > 0 was still real usage
-  fully offset by a credit and may still be a top driver of gross
-  activity even though it added nothing to the bill).
+- top_cost_drivers: MUST be a JSON array of plain SERVICE OR REGION NAME
+  STRINGS ONLY - for example ["Amazon EC2", "Amazon Virtual Private Cloud"].
+  Never an object, never a nested structure, never the gross_cost/
+  credits/net_cost figures themselves - the dashboard already has those
+  real numbers from context.current_period.service_breakdown /
+  region_breakdown and will look each one up by the exact name you give
+  here. Pick the names that most explain the observed change (a service
+  with net_cost 0 and gross_cost > 0 was still real usage fully offset
+  by a credit and may still belong here even though it added nothing to
+  the bill).
 - anomaly_findings: summarize context.anomalies.status and
   context.anomalies.anomalies as given - if status is "not_configured"
   or "none_found", say so plainly rather than describing an anomaly that
@@ -92,8 +96,22 @@ Field notes:
   particular anomaly) means AWS did not attribute one, not that you
   should infer one.
 - comparison_analysis: null unless the context below contains a
-  "comparison" object - see the "Cost Comparison" section further down
-  for exactly what to put here when it is present.
+  "comparison" object. When "comparison" IS present, comparison_analysis
+  is REQUIRED (never null) and MUST be an object with exactly this shape:
+
+  {{
+      "explanation": "",
+      "root_cause": "",
+      "evidence": [],
+      "recommendations": [],
+      "service_drivers": [],
+      "region_drivers": [],
+      "credits_impact": "",
+      "anomalies_summary": ""
+  }}
+
+  See the "Cost Comparison" section further down for what belongs in
+  each of these fields.
 
 Credit attribution - critical constraint:
 
@@ -151,33 +169,50 @@ relying only on precomputed totals - comparison.difference and
 comparison.percentage_change are facts to report, not the only evidence
 you should reason from.
 
-When a "comparison" object is present, populate comparison_analysis
-(otherwise leave it null) by determining:
+When a "comparison" object is present, comparison_analysis is REQUIRED
+(see the exact shape in the field notes above) and every one of its
+fields must be filled in - never leave it null, and never leave
+"explanation" empty, when a comparison object exists. If you genuinely
+cannot determine a cause from the supplied data, "explanation" must still
+contain that honest conclusion as prose (e.g. "The supplied data does not
+establish a clear cause for this change.") - an empty/missing
+explanation when a comparison was requested is always wrong; a filled-in
+explanation that says "the cause is undetermined" is correct and exactly
+what is wanted in that case.
 
-1. Which period had the higher net cost?
-2. What was the absolute difference (comparison.difference) and, when
-   mathematically valid, the percentage change (comparison.percentage_change)?
-3. Which services (from comparison.service_comparison) contributed most
-   to the difference?
-4. Which regions (from comparison.region_comparison) contributed most to
-   the difference?
-5. On which dates (from each period's daily_history, inside
+Populate comparison_analysis's fields using this reasoning, and answer
+in prose inside "explanation" (not as a separate list of numbered
+answers):
+
+1. Which period had the higher net cost, and what was the absolute
+   difference (comparison.difference) and, when mathematically valid,
+   the percentage change (comparison.percentage_change)?
+2. Which services (from comparison.service_comparison) contributed most
+   to the difference? List their plain names (nothing else) in
+   service_drivers - same string-only rule as top_cost_drivers above.
+3. Which regions (from comparison.region_comparison) contributed most to
+   the difference? List their plain names in region_drivers, same rule.
+4. On which dates (from each period's daily_history, inside
    comparison.selected_period / comparison.comparison_period) did
    meaningful changes occur?
-6. Was the change gradual across the period, or caused by a sudden
+5. Was the change gradual across the period, or caused by a sudden
    spike?
-7. Did credits (comparison.credit_comparison, and each period's own
+6. Did credits (comparison.credit_comparison, and each period's own
    gross_cost vs net_cost) materially affect the comparison? If gross
    cost was similar between periods but net cost differs mainly because
-   of a credit, say so explicitly rather than attributing the
-   difference to usage.
-8. Were any cost anomalies detected in either period
+   of a credit, say so explicitly in credits_impact rather than
+   attributing the difference to usage.
+7. Were any cost anomalies detected in either period
    (comparison.anomaly_comparison.selected_period /
-   .comparison_period)?
-9. What evidence in the supplied data supports your conclusion?
-10. If the supplied data does not establish the reason for the
-    difference, explicitly say the cause cannot be determined from Cost
-    Explorer data alone - do not guess one.
+   .comparison_period)? Summarize in anomalies_summary - if neither
+   period had a "found" status, say so plainly rather than describing an
+   anomaly that doesn't exist.
+8. What evidence in the supplied data supports your conclusion? List it
+   in evidence, and put your recommended actions (if any are actually
+   supported by the data) in recommendations.
+9. root_cause should be a short, direct statement of the cause (or of
+   "undetermined" if the data doesn't establish one) - explanation is
+   the fuller prose version of the same conclusion.
 
 Do not let this turn into an invented causal story. If EC2 cost rose
 from $50 to $120, you may say "EC2 was the largest contributor to the

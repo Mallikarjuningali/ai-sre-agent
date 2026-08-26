@@ -694,50 +694,176 @@ def _render_qa_row(question: str, answer: str) -> None:
     )
 
 
-def _render_ai_cost_analysis(report: dict, comparison: dict) -> None:
-    with card():
-        card_title("AI Cost Analysis")
+def _driver_name(driver) -> str | None:
+    """A driver entry SHOULD be a plain name string per the prompt's
+    schema (see llm/cost_prompt_builder.py). Defensively handles Gemini
+    still returning a breakdown-shaped object anyway - extracts the name
+    field, never falls through to a raw str(dict)/str(list) repr, which
+    is exactly the bug this function exists to prevent."""
+    if isinstance(driver, str):
+        return driver or None
+    if isinstance(driver, dict):
+        return driver.get("service") or driver.get("region") or driver.get("name")
+    return None
 
-        if not report:
-            empty_state("No AI cost analysis yet", "Click Refresh to run a Cost Explorer query and Gemini analysis", "🤖")
-            return
 
-        badge_html = severity_badge(report.get("severity", "")) if report.get("severity") else ""
-        st.markdown(f'<div style="margin-bottom:0.6rem;">{badge_html}</div>', unsafe_allow_html=True)
+def _render_drivers_list(title: str, driver_names: list, breakdown: list, label_key: str, currency) -> None:
+    """Renders a numbered list of real gross/credits/net figures for the
+    named drivers, looked up from `breakdown` (the actual AWS-sourced
+    merged service_breakdown/region_breakdown - never from whatever
+    number Gemini itself might have echoed back). A name Gemini
+    mentioned that isn't found in the real breakdown is shown without
+    fabricated figures rather than guessing one."""
+    names = [n for n in (_driver_name(d) for d in (driver_names or [])) if n]
+    if not names:
+        return
 
-        _render_qa_row("AI Summary", report.get("summary") or "No summary available.")
+    by_name = {item.get(label_key): item for item in (breakdown or []) if item.get(label_key)}
 
-        drivers = report.get("top_cost_drivers") or []
-        if drivers:
-            drivers_text = ", ".join(str(d) for d in drivers)
-            _render_qa_row("What services/regions drove the change?", drivers_text)
+    st.markdown(
+        f'<div style="font-size:12.5px; font-weight:600; color:var(--text-secondary); margin-bottom:0.3rem;">{title}</div>',
+        unsafe_allow_html=True,
+    )
 
-        anomaly_findings = report.get("anomaly_findings") or []
-        if anomaly_findings:
-            findings_text = "<br>".join(str(f) for f in anomaly_findings)
+    rows_html = []
+    for i, name in enumerate(names, start=1):
+        entry = by_name.get(name)
+        if entry:
+            entry_currency = entry.get("currency") or currency
+            detail = (
+                f'Gross: {_format_money(entry.get("gross_cost"), entry_currency)} &middot; '
+                f'Credits: {_format_signed_money(entry.get("credits"), entry_currency) if entry.get("credits") else "$0.00"} &middot; '
+                f'Net: {_format_money(entry.get("net_cost"), entry_currency)}'
+            )
+        else:
+            detail = "cost data unavailable for this name"
+        rows_html.append(
+            f'<div style="padding:0.35rem 0; border-bottom:1px solid var(--border-subtle);">'
+            f'<div style="font-size:13.5px; font-weight:600; color:var(--text-primary);">{i}. {name}</div>'
+            f'<div style="font-size:12.5px; color:var(--text-secondary); margin-top:1px;">{detail}</div></div>'
+        )
+
+    st.markdown(f'<div style="margin-bottom:0.8rem;">{"".join(rows_html)}</div>', unsafe_allow_html=True)
+
+
+def _looks_like_parse_failure(report: dict) -> bool:
+    """CostAnalyzer.run() stores {"raw_response": <text>} when Gemini's
+    response couldn't be parsed as JSON (see analyzer/cost_analyzer.py) -
+    no other report shape has raw_response without also having summary."""
+    return bool(report.get("raw_response")) and report.get("summary") is None
+
+
+def _render_comparison_analysis(report: dict, comparison: dict, currency) -> tuple:
+    """The comparison-scoped mini-report - explanation/root_cause/
+    evidence/recommendations/drivers, all about comparison.selected_period
+    vs comparison.comparison_period specifically, never mixed with the
+    separate always-on current_period/previous_period analysis below.
+    This keeps the whole AI Cost Analysis section talking about ONE
+    period pair whenever a comparison is active.
+
+    Returns (root_cause, evidence, recommendations) for the caller to
+    render as sibling cards AFTER this function's own `with card():`
+    block has closed - matching the page's existing layout, where Root
+    Cause/Evidence/Recommendations are never nested inside another card."""
+    selected = comparison.get("selected_period") or {}
+    comparison_period = comparison.get("comparison_period") or {}
+
+    st.markdown(
+        f'<div style="font-size:12px; color:var(--text-muted); margin-bottom:0.6rem;">'
+        f'Comparing {_format_period_range(selected)} against {_format_period_range(comparison_period)}</div>',
+        unsafe_allow_html=True,
+    )
+
+    if _looks_like_parse_failure(report):
+        st.warning("Gemini's response for this refresh could not be parsed as valid JSON.")
+        with st.expander("Technical details"):
+            st.code(str(report.get("raw_response")), language=None)
+        return None, [], []
+
+    analysis = report.get("comparison_analysis")
+
+    if not isinstance(analysis, dict):
+        # A comparison was requested and the report itself exists, but
+        # comparison_analysis is missing/null - per the prompt, Gemini is
+        # explicitly told this is required whenever "comparison" is
+        # present, so an absent value here means the response didn't
+        # follow the schema this refresh, not that Gemini "had nothing to
+        # say." Distinct, honest message - never the generic fallback.
+        st.info("Gemini did not return a comparison analysis for this refresh. Try clicking Refresh again.")
+        return None, [], []
+
+    explanation = analysis.get("explanation")
+    if not explanation:
+        st.info("Gemini's comparison analysis is missing an explanation for this refresh.")
+    else:
+        _render_qa_row("Why did costs change?", explanation)
+
+    _render_drivers_list(
+        "Services driving the change",
+        analysis.get("service_drivers"),
+        selected.get("service_breakdown"),
+        "service",
+        currency,
+    )
+    _render_drivers_list(
+        "Regions driving the change",
+        analysis.get("region_drivers"),
+        selected.get("region_breakdown"),
+        "region",
+        currency,
+    )
+
+    if analysis.get("credits_impact"):
+        _render_qa_row("What happened to credits?", analysis["credits_impact"])
+    if analysis.get("anomalies_summary"):
+        _render_qa_row("Were anomalies detected?", analysis["anomalies_summary"])
+
+    return analysis.get("root_cause"), analysis.get("evidence") or [], analysis.get("recommendations") or []
+
+
+def _render_default_analysis(report: dict, current_period: dict, currency) -> tuple:
+    """The always-on analysis of context.current_period vs
+    previous_period (the default lookback, independent of any
+    user-selected comparison) - shown only when no comparison is
+    active, so it's never juxtaposed with a different date range.
+    Returns (root_cause, evidence, recommendations) - see
+    _render_comparison_analysis's docstring for why."""
+    badge_html = severity_badge(report.get("severity", "")) if report.get("severity") else ""
+    st.markdown(f'<div style="margin-bottom:0.6rem;">{badge_html}</div>', unsafe_allow_html=True)
+
+    _render_qa_row("AI Summary", report.get("summary") or "No summary available.")
+
+    _render_drivers_list(
+        "Services driving the change",
+        report.get("top_cost_drivers"),
+        (current_period or {}).get("service_breakdown"),
+        "service",
+        currency,
+    )
+    _render_drivers_list(
+        "Regions driving the change",
+        report.get("top_cost_drivers"),
+        (current_period or {}).get("region_breakdown"),
+        "region",
+        currency,
+    )
+
+    anomaly_findings = report.get("anomaly_findings") or []
+    if anomaly_findings:
+        findings_text = "<br>".join(str(f) for f in anomaly_findings if isinstance(f, str))
+        if findings_text:
             _render_qa_row("Were anomalies detected?", findings_text)
 
-        analysis = report.get("comparison_analysis")
-        if analysis and comparison and comparison.get("selected_period"):
-            selected = comparison.get("selected_period") or {}
-            comparison_period = comparison.get("comparison_period") or {}
-            st.markdown(
-                f'<div style="font-size:12px; color:var(--text-muted); margin:0.8rem 0 0.5rem;">'
-                f'Comparing {_format_period_range(selected)} against {_format_period_range(comparison_period)}</div>',
-                unsafe_allow_html=True,
-            )
-            explanation = analysis.get("explanation") if isinstance(analysis, dict) else str(analysis)
-            _render_qa_row("Why did costs change?", explanation or "No AI explanation available.")
-        elif comparison and comparison.get("selected_period"):
-            st.caption("Gemini analysis for this comparison will appear here after the next Refresh.")
+    return report.get("root_cause"), report.get("evidence") or [], report.get("recommendations") or []
 
+
+def _render_root_cause_evidence_recommendations(root_cause, evidence: list, recommendations: list) -> None:
     st.markdown("<div style='height:0.75rem'></div>", unsafe_allow_html=True)
 
     col_root, col_evidence = st.columns(2)
 
     with col_root, card():
         card_title("Root Cause")
-        root_cause = report.get("root_cause") if report else None
         if root_cause:
             st.markdown(
                 f"""
@@ -753,7 +879,6 @@ def _render_ai_cost_analysis(report: dict, comparison: dict) -> None:
 
     with col_evidence, card():
         card_title("Evidence")
-        evidence = (report or {}).get("evidence") or []
         if evidence:
             items_html = "".join(
                 f'<div style="display:flex; gap:9px; padding:0.5rem 0; border-bottom:1px solid var(--border-subtle);">'
@@ -769,7 +894,6 @@ def _render_ai_cost_analysis(report: dict, comparison: dict) -> None:
 
     with card():
         card_title("Recommendations")
-        recommendations = (report or {}).get("recommendations") or []
         if recommendations:
             items_html = "".join(
                 f'<div style="display:flex; gap:9px; padding:0.5rem 0; border-bottom:1px solid var(--border-subtle);">'
@@ -780,6 +904,39 @@ def _render_ai_cost_analysis(report: dict, comparison: dict) -> None:
             st.markdown(items_html, unsafe_allow_html=True)
         else:
             empty_state("No recommendations yet", "", "💡")
+
+
+def _render_ai_cost_analysis(report: dict, comparison: dict, current_period: dict) -> None:
+    """report/comparison/current_period are ALL from the same Refresh -
+    see render()'s single set of service calls below. has_comparison
+    decides which single, consistent period pair the whole section (AI
+    Summary/explanation, drivers, root cause, evidence, recommendations)
+    describes - never a mix of the comparison's user-picked dates and
+    the separate always-on current_period/previous_period lookback."""
+    currency = (current_period or {}).get("currency")
+    has_comparison = bool(comparison and comparison.get("selected_period"))
+
+    root_cause, evidence, recommendations = None, [], []
+    show_footer = False
+
+    with card():
+        card_title("AI Cost Analysis")
+
+        if not report:
+            empty_state("No AI cost analysis yet", "Click Refresh to run a Cost Explorer query and Gemini analysis", "🤖")
+        elif has_comparison:
+            root_cause, evidence, recommendations = _render_comparison_analysis(report, comparison, currency)
+            show_footer = True
+        elif _looks_like_parse_failure(report):
+            st.warning("Gemini's response for this refresh could not be parsed as valid JSON.")
+            with st.expander("Technical details"):
+                st.code(str(report.get("raw_response")), language=None)
+        else:
+            root_cause, evidence, recommendations = _render_default_analysis(report, current_period, currency)
+            show_footer = True
+
+    if show_footer:
+        _render_root_cause_evidence_recommendations(root_cause, evidence, recommendations)
 
 
 # ---------------------------------------------------------------------------
@@ -825,4 +982,4 @@ def render(services, config) -> None:
 
     st.markdown("<div style='height:1.1rem'></div>", unsafe_allow_html=True)
 
-    _render_ai_cost_analysis(services.cost_explorer.get_report(), comparison)
+    _render_ai_cost_analysis(services.cost_explorer.get_report(), comparison, summary.get("current_period"))

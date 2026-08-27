@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import streamlit as st
 
+from services import FollowUpActionError
+
 from ..badges import new_badge, severity_badge, status_badge
 from ..cards import card, card_title, empty_state
 from ..formatting import format_datetime, format_duration, format_number
@@ -18,6 +20,7 @@ from ..topbar import page_header
 _SEVERITY_RANK = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
 _RUN_ID_KEY = "report_viewer_run_id"
 _EXPANDED_KEY = "report_viewer_expanded_id"
+_FOLLOW_UP_ERROR_KEY = "report_viewer_follow_up_error"
 
 
 def render(services, config) -> None:
@@ -90,6 +93,9 @@ def render(services, config) -> None:
                 _render_telemetry_card(report)
             with col_confidence:
                 _render_confidence_card(report)
+
+            st.markdown("<div style='height:0.9rem'></div>", unsafe_allow_html=True)
+            _render_follow_up_card(services, run_id, report, report_key)
 
         st.markdown("<div style='height:0.9rem'></div>", unsafe_allow_html=True)
 
@@ -400,3 +406,160 @@ def _render_confidence_card(report: dict) -> None:
             unsafe_allow_html=True,
         )
         st.progress(pct)
+
+
+# ---------------------------------------------------------------------------
+# Follow-up Q&A - "Ask AegisOps". Evidence-grounded questions about this
+# specific resource's RCA - see api/follow_up_manager.py for the backend.
+# This section only renders what the backend actually returns; it never
+# computes, guesses, or fabricates an answer itself. The original RCA
+# above is never modified by anything in this section.
+# ---------------------------------------------------------------------------
+
+_CONFIDENCE_COLORS = {
+    "HIGH": ("#86efac", "rgba(34,197,94,0.14)"),
+    "MEDIUM": ("#fdba74", "rgba(245,158,11,0.14)"),
+    "LOW": ("#94a3b8", "rgba(148,163,184,0.14)"),
+}
+
+
+def _confidence_badge(confidence: str) -> str:
+    fg, bg = _CONFIDENCE_COLORS.get(str(confidence or "").upper(), _CONFIDENCE_COLORS["LOW"])
+    return f'<span style="background:{bg}; color:{fg}; padding:2px 9px; border-radius:999px; font-size:11px; font-weight:700;">{confidence}</span>'
+
+
+def _investigation_id_for(run_id: str, report: dict) -> str | None:
+    resource_id = report.get("report_id") or report.get("instance_id")
+    if not resource_id:
+        return None
+    return f"{run_id}__{resource_id}"
+
+
+def _render_conversation_turn(turn: dict) -> None:
+    role = turn.get("role")
+    content = turn.get("content") or ""
+
+    if role == "user":
+        st.markdown(
+            f"""
+            <div style="margin-bottom:0.6rem;">
+              <div style="font-size:11px; font-weight:700; letter-spacing:0.05em; color:var(--text-muted); margin-bottom:3px;">YOU ASKED</div>
+              <div style="font-size:14px; color:var(--text-primary);">{content}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        return
+
+    evidence_used = turn.get("evidence_used") or []
+    evidence_html = ""
+    if evidence_used:
+        items = "".join(
+            f'<div style="display:flex; gap:8px; padding:0.2rem 0;">'
+            f'<span style="color:var(--text-muted); font-size:12px;">▸</span>'
+            f'<span style="font-size:12.5px; color:var(--text-secondary); line-height:1.4;">'
+            f'{e.get("observation") or ""}'
+            f'{" — " + e.get("signal") if e.get("signal") else ""}'
+            f'{" (" + e.get("timestamp") + ")" if e.get("timestamp") else ""}</span></div>'
+            for e in evidence_used if isinstance(e, dict) and e.get("observation")
+        )
+        if items:
+            evidence_html = (
+                '<div style="margin-top:0.5rem;">'
+                '<div style="font-size:11px; font-weight:700; letter-spacing:0.05em; color:var(--text-muted); margin-bottom:2px;">EVIDENCE</div>'
+                f"{items}</div>"
+            )
+
+    uncertainties = turn.get("uncertainties") or []
+    uncertainty_html = ""
+    if uncertainties:
+        items = "".join(
+            f'<div style="font-size:12px; color:var(--text-muted); padding:0.15rem 0;">⚠ {u}</div>'
+            for u in uncertainties if u
+        )
+        uncertainty_html = f'<div style="margin-top:0.4rem;">{items}</div>'
+
+    confidence = turn.get("confidence")
+    confidence_html = _confidence_badge(confidence) if confidence else ""
+
+    st.markdown(
+        f"""
+        <div style="background:var(--bg-elevated); border:1px solid var(--border-subtle); border-radius:var(--radius-sm);
+                    padding:0.8rem 1rem; margin-bottom:0.8rem;">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px; margin-bottom:0.4rem;">
+            <div style="font-size:11px; font-weight:700; letter-spacing:0.05em; color:var(--text-muted);">AEGISOPS</div>
+            {confidence_html}
+          </div>
+          <div style="font-size:14px; color:var(--text-primary); line-height:1.5;">{content}</div>
+          {evidence_html}
+          {uncertainty_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_follow_up_card(services, run_id: str, report: dict, report_key: str) -> None:
+    investigation_id = _investigation_id_for(run_id, report)
+
+    with card():
+        card_title("Ask AegisOps", "Ask a question about this investigation")
+
+        if not investigation_id:
+            empty_state("Follow-up questions aren't available for this report", "", "💬")
+            return
+
+        error = st.session_state.pop(f"{_FOLLOW_UP_ERROR_KEY}_{report_key}", None)
+
+        try:
+            conversation_data = services.follow_up.get_conversation(investigation_id)
+        except FollowUpActionError as exc:
+            st.info(str(exc))
+            conversation_data = {"conversation": []}
+
+        conversation = conversation_data.get("conversation") or []
+
+        if conversation:
+            for turn in conversation:
+                _render_conversation_turn(turn)
+            st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
+
+        if error:
+            st.error(error)
+
+        input_key = f"follow_up_question_{report_key}"
+        col_input, col_button = st.columns([5, 1])
+        with col_input:
+            question = st.text_input(
+                "Ask a question about this investigation…",
+                key=input_key,
+                label_visibility="collapsed",
+                placeholder="Ask a question about this investigation…",
+            )
+        with col_button:
+            ask_clicked = st.button("Ask", key=f"follow_up_ask_{report_key}", width="stretch", type="primary")
+
+        if ask_clicked:
+            _handle_follow_up_question(services, investigation_id, question, report_key, input_key)
+
+
+def _handle_follow_up_question(services, investigation_id: str, question: str, report_key: str, input_key: str) -> None:
+    if not (question or "").strip():
+        st.session_state[f"{_FOLLOW_UP_ERROR_KEY}_{report_key}"] = "Please enter a question before clicking Ask."
+        st.rerun()
+        return
+
+    try:
+        with st.spinner("AegisOps is reviewing the investigation evidence…"):
+            services.follow_up.ask(investigation_id, question)
+    except FollowUpActionError as exc:
+        # The investigation data itself is untouched and the prior
+        # conversation is not lost - only this one new question failed.
+        st.session_state[f"{_FOLLOW_UP_ERROR_KEY}_{report_key}"] = str(exc)
+        st.rerun()
+        return
+
+    # Clear the input for the next question - popped before rerun so the
+    # widget re-renders empty instead of keeping the just-asked text.
+    st.session_state.pop(input_key, None)
+    st.rerun()

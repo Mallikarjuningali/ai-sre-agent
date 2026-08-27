@@ -11,6 +11,7 @@ from .analytics_service import AnalyticsService
 from .investigation_service import InvestigationActionError, InvestigationService
 from .execution_service import ExecutionActionError, ExecutionService
 from .cost_explorer_service import CostExplorerActionError, CostExplorerService, CostRefreshService
+from .follow_up_service import FollowUpActionError, FollowUpService
 from .bootstrap import Services, build_services
 
 __all__ = [
@@ -35,6 +36,8 @@ __all__ = [
     "CostExplorerService",
     "CostRefreshService",
     "CostExplorerActionError",
+    "FollowUpService",
+    "FollowUpActionError",
     "Services",
     "build_services",
 ]

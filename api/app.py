@@ -45,6 +45,13 @@ from pydantic import BaseModel
 from api.investigation_manager import InvestigationBusyError, InvestigationManager
 from api.cost_explorer_manager import CostExplorerBusyError, CostExplorerManager
 from api.resource_discovery import discover_resources
+from api.follow_up_manager import (
+    FollowUpManager,
+    InvestigationNotFoundError,
+    InvestigationSupersededError,
+    InvalidQuestionError,
+    FollowUpUnavailableError,
+)
 from utils.dashboard_export import FEED_DIR, build_resources_json, load_current_contexts
 from utils.cost_dashboard_export import FEED_DIR as COST_FEED_DIR
 from utils.execution_cleanup import delete_executions
@@ -58,6 +65,12 @@ manager = InvestigationManager()
 # refresh can never collide with an infra investigation.
 cost_manager = CostExplorerManager()
 
+# Follow-Up Questions - reads an EXISTING report/context, never collects
+# new AWS telemetry and never starts an investigation. See
+# api/follow_up_manager.py's module docstring for the investigation_id
+# shape and the immutability guarantee.
+follow_up_manager = FollowUpManager()
+
 
 class ResourceInvestigationRequest(BaseModel):
     resource_type: str
@@ -66,6 +79,10 @@ class ResourceInvestigationRequest(BaseModel):
 
 class DeleteExecutionsRequest(BaseModel):
     run_ids: list[str]
+
+
+class FollowUpQuestionRequest(BaseModel):
+    question: str
 
 
 @app.post("/investigation/full")
@@ -104,6 +121,36 @@ def get_investigation_resources():
         return discover_resources()
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"AWS resource discovery failed: {exc}")
+
+
+@app.post("/investigation/{investigation_id}/follow-up")
+def ask_follow_up_question(investigation_id: str, payload: FollowUpQuestionRequest):
+    """investigation_id is f"{run_id}__{resource_id}" - the dashboard
+    builds this from values it already has when rendering a completed
+    report (see report_viewer.py). Never collects new AWS telemetry;
+    only reads the existing report/context for that resource and asks
+    Gemini about them - see api/follow_up_manager.py."""
+    try:
+        return follow_up_manager.ask(investigation_id, payload.question)
+    except InvestigationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except InvestigationSupersededError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except InvalidQuestionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except FollowUpUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+@app.get("/investigation/{investigation_id}/follow-up")
+def get_follow_up_conversation(investigation_id: str):
+    """The existing conversation for this investigation, or an empty one
+    if no follow-up question has been asked yet - lets the dashboard
+    redisplay prior Q&A after a page reload."""
+    try:
+        return follow_up_manager.get_conversation(investigation_id)
+    except InvestigationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 @app.get("/resources")

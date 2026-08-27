@@ -235,6 +235,57 @@ is currently `QUEUED`/`RUNNING` (a running investigation is never deleted),
 and `404` if none of the requested `run_ids` matched anything. A partial
 match (some deleted, some not found) is a `200` with both arrays populated.
 
+## Follow-up questions — FollowUpService (Investigation Report page, "Ask AegisOps")
+
+Made by `services/follow_up_service.py` the same write-ish/live-backend way
+as Investigation actions above (REST-only; local/S3 surfaces a clear error
+instead of pretending to call Gemini). Never collects new AWS telemetry and
+never starts a new investigation - `api/follow_up_manager.py` only reads
+the existing `output/reports/<resource_id>.json` /
+`output/context/<resource_id>.json` for the resource in question and asks
+Gemini a follow-up question about them, sanitized through the exact same
+`llm/sanitizer.py` the original RCA prompt already uses.
+
+`investigation_id` is `f"{run_id}__{resource_id}"` - the Report Viewer
+already has both values in scope for a rendered report; it is opaque to
+the backend beyond that split.
+
+```
+POST /investigation/{investigation_id}/follow-up
+  request:  { "question": "Was the CPU increase caused by increased traffic?" }
+  response: {
+    "investigation_id": "...", "question": "...",
+    "answer": "...", "confidence": "HIGH|MEDIUM|LOW",
+    "evidence_used": [ { "source": "CloudWatch", "signal": "CPUUtilization",
+                          "observation": "...", "timestamp": "..." } ],
+    "uncertainties": [ "..." ],
+    "follow_up_needed": false
+  }
+
+GET /investigation/{investigation_id}/follow-up
+  response: { "investigation_id": "...", "conversation": [
+      { "role": "user", "content": "...", "timestamp": "..." },
+      { "role": "assistant", "content": "...", "timestamp": "...",
+        "evidence_used": [...], "confidence": "HIGH" }
+  ] }
+```
+
+`conversation` is `[]` (not an error) when no follow-up question has been
+asked yet for this investigation.
+
+Error responses: `404` if the resource has no report/context yet (not
+investigated), `409` if the resource has been **reinvestigated since** -
+`output/reports/<resource_id>.json` is the latest report per resource, not
+versioned per run, so a follow-up about a superseded run is rejected with
+a clear message rather than silently answered against newer evidence;
+`400` for an empty or oversized question; `503` if the Gemini call itself
+fails or times out (the existing conversation is never lost when this
+happens - only the new question failed).
+
+The AI never invents evidence: if the supplied investigation data doesn't
+establish an answer, `answer` says so explicitly rather than guessing, and
+`confidence` reflects that (`LOW`).
+
 ## Adding a new backend
 
 Implement `DataSource` in `services/data_source.py` (see

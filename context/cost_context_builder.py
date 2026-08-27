@@ -218,6 +218,34 @@ class CostContextBuilder:
 
         return comparison
 
+    @staticmethod
+    def _merge_daily_with_credits(daily_history, credit_history) -> List[list]:
+        """Combines the per-day net-cost series (daily_history, every
+        record type) with the per-day credit-only series
+        (credits.history, RECORD_TYPE=Credit) by date, into one
+        [date, gross_cost, credits, net_cost] entry per day - the exact
+        same net - credits = gross relationship
+        _merge_breakdown_with_credits already applies to service/region,
+        just applied per day here instead. A date present in only one
+        series gets 0 for the missing side (no credit that day, or vice
+        versa) - AWS simply didn't return a Total for that day/filter
+        combination, not an unknown value. Single source of truth for
+        gross-per-day so no UI component has to recompute it."""
+
+        net_map = {day: amount for day, amount in (daily_history or [])}
+        credit_map = {day: amount for day, amount in (credit_history or [])}
+
+        dates = sorted(set(net_map) | set(credit_map))
+
+        daily = []
+        for day in dates:
+            net = round(net_map.get(day, 0), 2)
+            credit = round(credit_map.get(day, 0), 2)
+            gross = round(net - credit, 2)
+            daily.append([day, gross, credit, net])
+
+        return daily
+
     # =====================================================
     # Per-period bundle - shared by current_period, previous_period, and
     # both sides of the optional Month/Period Comparison
@@ -243,6 +271,15 @@ class CostContextBuilder:
             "net_cost": net_cost,
 
             "daily_history": period_raw.get("daily_history") or [],
+
+            # Additive - [date, gross_cost, credits, net_cost] per day,
+            # for the Cost Overview trend chart (Gross/Credits/Net over
+            # the selected period) so the UI never derives gross-per-day
+            # itself. daily_history above is unchanged.
+            "daily_breakdown": self._merge_daily_with_credits(
+                period_raw.get("daily_history"),
+                credits.get("history"),
+            ),
 
             "service_breakdown": self._merge_breakdown_with_credits(
                 period_raw.get("service_breakdown"),

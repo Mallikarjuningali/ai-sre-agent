@@ -170,7 +170,12 @@ def build_regions(context: dict) -> dict:
 
 
 def build_anomalies(context: dict) -> dict:
-    return context.get("anomalies") or {"status": "unavailable", "reason": "No cost context available", "anomalies": []}
+    return context.get("anomalies") or {
+        "status": "unavailable", "reason": "No cost context available", "anomalies": [],
+        "requested_start": None, "requested_end": None,
+        "analyzed_start": None, "analyzed_end": None,
+        "supported_from": None, "supported": None, "partial": False,
+    }
 
 
 def build_comparison(context: dict):

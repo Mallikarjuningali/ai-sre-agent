@@ -104,6 +104,17 @@ def _format_chart_date(iso_date: str) -> str:
         return iso_date or "—"
 
 
+def _format_full_date(iso_date: str) -> str:
+    """"YYYY-MM-DD" -> "Jun 03, 2026" - unlike _format_chart_date above,
+    this keeps the year, for messaging that references a fixed calendar
+    boundary (e.g. AWS's supported anomaly-detection date) rather than a
+    chart axis label."""
+    try:
+        return datetime.strptime(iso_date, "%Y-%m-%d").strftime("%b %d, %Y")
+    except (TypeError, ValueError):
+        return iso_date or "—"
+
+
 def _format_percent(value) -> str:
     if value is None:
         return "—"
@@ -581,13 +592,44 @@ def _render_anomaly_card(anomaly: dict, currency) -> None:
     )
 
 
+def _render_partial_anomaly_notice(anomalies: dict) -> None:
+    """Shown whenever only part of the requested window could actually be
+    analyzed (anomalies["partial"] is True) - regardless of whether the
+    supported portion turned up a finding, "none_found", or nothing at
+    all. Never lets a partial analysis read as if the full requested
+    range was checked."""
+    requested_start = _format_full_date(anomalies.get("requested_start"))
+    requested_end = _format_full_date(anomalies.get("requested_end"))
+    analyzed_start = _format_full_date(anomalies.get("analyzed_start"))
+    analyzed_end = _format_full_date(anomalies.get("analyzed_end"))
+
+    st.markdown(
+        f"""
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:0.4rem;">
+          <span style="font-size:18px;">ℹ</span>
+          <span style="font-weight:600; color:var(--text-primary);">Partial Anomaly Analysis</span>
+        </div>
+        <div style="font-size:13px; color:var(--text-secondary); line-height:1.6; margin-bottom:0.7rem;">
+          AWS Cost Anomaly Detection supports dates from {_format_full_date(anomalies.get("supported_from"))} onward.<br>
+          Requested: {requested_start} &rarr; {requested_end}<br>
+          Analyzed: {analyzed_start} &rarr; {analyzed_end}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _render_anomalies_section(anomalies: dict, currency=None) -> None:
     status = anomalies.get("status")
     findings = anomalies.get("anomalies") or []
     currency = anomalies.get("currency") or currency
+    partial = bool(anomalies.get("partial"))
 
     with card():
         card_title("Cost Anomalies")
+
+        if partial and status in ("found", "none_found"):
+            _render_partial_anomaly_notice(anomalies)
 
         if status == "found" and findings:
             for finding in findings:
@@ -600,8 +642,15 @@ def _render_anomalies_section(anomalies: dict, currency=None) -> None:
             icon, label = "🟡", "Anomaly Detection Not Configured"
             detail = anomalies.get("reason") or "No AWS Cost Anomaly monitors are configured for this account."
         elif status == "unsupported_range":
-            icon, label = "🟠", "Anomaly Data Unavailable For This Range"
-            detail = "AWS Cost Anomaly Detection does not support this date range."
+            supported_from = anomalies.get("supported_from")
+            icon, label = "🟠", "Anomaly Analysis Unavailable"
+            if supported_from:
+                detail = (
+                    "The selected period is outside the AWS Cost Anomaly Detection supported date range. "
+                    f"Supported from: {_format_full_date(supported_from)}."
+                )
+            else:
+                detail = "AWS Cost Anomaly Detection does not support this date range."
             show_details = True
         elif status == "unavailable":
             icon, label = "⚪", "Cost Anomaly Data Unavailable"
@@ -609,7 +658,10 @@ def _render_anomalies_section(anomalies: dict, currency=None) -> None:
             show_details = True
         else:  # "none_found", or nothing published yet
             icon, label = "✓", "No cost anomalies detected"
-            detail = anomalies.get("reason") or "No AWS cost anomaly was detected for this period."
+            if partial:
+                detail = "No anomalies were detected in the supported portion of this period."
+            else:
+                detail = anomalies.get("reason") or "No AWS cost anomaly was detected for this period."
 
         st.markdown(
             f"""
@@ -917,23 +969,60 @@ def _render_ai_anomaly_card(analysis: dict, anomaly_comparison: dict) -> None:
     with card():
         card_title("Anomaly Analysis")
 
-        selected_status = ((anomaly_comparison or {}).get("selected_period") or {}).get("status")
-        comparison_status = ((anomaly_comparison or {}).get("comparison_period") or {}).get("status")
+        selected = (anomaly_comparison or {}).get("selected_period") or {}
+        comparison = (anomaly_comparison or {}).get("comparison_period") or {}
+        selected_status = selected.get("status")
+        comparison_status = comparison.get("status")
         summary_text = (analysis or {}).get("anomalies_summary")
 
-        if selected_status == "unavailable" or comparison_status == "unavailable":
-            st.markdown("⚠ Unable to retrieve anomaly data.")
-        elif selected_status == "unsupported_range" or comparison_status == "unsupported_range":
-            st.markdown(
-                "ℹ Anomaly analysis unavailable\n\n"
-                "AWS Cost Anomaly Detection does not support the selected comparison range."
-            )
+        # The selected period's own result is the primary message here -
+        # it must never be hidden or overridden by the comparison
+        # period's status. A comparison period that predates AWS's
+        # supported window is a real, independent condition, not a
+        # reason to suppress a perfectly valid selected-period result.
+        if selected_status == "unavailable":
+            st.markdown("⚠ Unable to retrieve anomaly data for the selected period.")
+        elif selected_status == "unsupported_range":
+            supported_from = selected.get("supported_from")
+            if supported_from:
+                st.markdown(
+                    "ℹ Anomaly analysis unavailable\n\n"
+                    f"AWS Cost Anomaly Detection currently supports detection from "
+                    f"{_format_full_date(supported_from)} onward. The selected period is "
+                    "outside that supported window."
+                )
+            else:
+                st.markdown(
+                    "ℹ Anomaly analysis unavailable\n\n"
+                    "AWS Cost Anomaly Detection does not support the selected period's date range."
+                )
         elif selected_status == "not_configured":
             st.markdown("ℹ Anomaly Detection Not Configured\n\nNo AWS Cost Anomaly monitors are configured for this account.")
-        elif summary_text:
-            st.markdown(f"✓ {summary_text}" if selected_status == "none_found" else summary_text)
         else:
-            st.markdown("✓ No anomalies detected")
+            if selected.get("partial"):
+                _render_partial_anomaly_notice(selected)
+            if summary_text:
+                st.markdown(f"✓ {summary_text}" if selected_status == "none_found" else summary_text)
+            elif selected.get("partial"):
+                st.markdown("✓ No anomalies detected in the supported period.")
+            else:
+                st.markdown("✓ No anomalies detected")
+
+        # The comparison period is independent - note it separately when
+        # it couldn't be analyzed, without hiding the selected period's
+        # result rendered above.
+        if comparison_status in ("unsupported_range", "unavailable") and selected_status not in ("unsupported_range", "unavailable"):
+            if comparison_status == "unsupported_range":
+                comparison_supported_from = comparison.get("supported_from")
+                comparison_detail = (
+                    f"AWS Cost Anomaly Detection does not support the comparison period's date range "
+                    f"(supported from {_format_full_date(comparison_supported_from)} onward)."
+                    if comparison_supported_from else
+                    "AWS Cost Anomaly Detection does not support the comparison period's date range."
+                )
+            else:
+                comparison_detail = "Could not retrieve anomaly data for the comparison period."
+            st.caption(f"ℹ️ Comparison period: {comparison_detail}")
 
 
 def _render_ai_cost_analysis(report: dict, comparison: dict, currency) -> None:

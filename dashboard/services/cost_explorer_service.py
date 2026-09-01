@@ -82,6 +82,9 @@ _EMPTY_SERVICES: dict[str, Any] = {"service_breakdown": [], "service_comparison"
 _EMPTY_REGIONS: dict[str, Any] = {"region_breakdown": [], "region_comparison": [], "currency": None, "region_credit_note": None}
 _EMPTY_ANOMALIES: dict[str, Any] = {
     "status": "unavailable", "reason": "No cost data published yet", "anomalies": [],
+    "requested_start": None, "requested_end": None,
+    "analyzed_start": None, "analyzed_end": None,
+    "supported_from": None, "supported": None, "partial": False,
 }
 _EMPTY_COMPARISON: dict[str, Any] = {}
 _EMPTY_REPORT: dict[str, Any] = {}

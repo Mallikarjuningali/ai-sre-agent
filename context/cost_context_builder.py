@@ -323,7 +323,12 @@ class CostContextBuilder:
 
         }
 
-    _EMPTY_ANOMALIES = {"status": "unavailable", "reason": "No collector data", "anomalies": []}
+    _EMPTY_ANOMALIES = {
+        "status": "unavailable", "reason": "No collector data", "anomalies": [],
+        "requested_start": None, "requested_end": None,
+        "analyzed_start": None, "analyzed_end": None,
+        "supported_from": None, "supported": None, "partial": False,
+    }
 
     def _build_comparison(self, comparison_raw):
         """Builds the Month/Period Comparison block from the collector's

@@ -17,12 +17,13 @@ Purpose:
 =========================================================
 """
 
+import re
 from datetime import date, datetime, timedelta, UTC
 
 from utils.cost_writer import write_json
 from utils.aws_clients import get_ce_client
 from utils.logger import get_logger
-from config.settings import COST_LOOKBACK_DAYS
+from config.settings import COST_LOOKBACK_DAYS, COST_ANOMALY_MAX_LOOKBACK_DAYS
 
 logger = get_logger(__name__)
 
@@ -50,6 +51,39 @@ def _error_code(exc):
         return None
 
     return (response.get("Error") or {}).get("Code")
+
+
+def _cost_anomaly_earliest_supported_date():
+    """AWS Cost Anomaly Detection's earliest supported GetAnomalies
+    detectionDate, derived from the configured rolling window (see
+    COST_ANOMALY_MAX_LOOKBACK_DAYS in config/settings.py). Recomputed
+    fresh on every call (never cached) so it always reflects "today," not
+    the date the process started - a rolling window, never a hardcoded
+    calendar date."""
+
+    return datetime.now(UTC).date() - timedelta(days=COST_ANOMALY_MAX_LOOKBACK_DAYS)
+
+
+def _parse_supported_boundary(reason):
+    """Extracts the AWS-reported earliest supported detectionDate
+    (a real date, e.g. "2026-06-03") from a GetAnomalies ValidationException
+    message such as "Earliest supported detectionDate for
+    GetRecentAnomalies is 2026-06-03." Returns a date, or None when the
+    message doesn't contain a parseable one - this is read from AWS's own
+    response text, never guessed or invented."""
+
+    if not reason:
+        return None
+
+    match = re.search(r"(\d{4}-\d{2}-\d{2})", reason)
+
+    if not match:
+        return None
+
+    try:
+        return datetime.strptime(match.group(1), "%Y-%m-%d").date()
+    except ValueError:
+        return None
 
 
 def _is_complete_calendar_month(period_start, period_end):
@@ -519,25 +553,53 @@ def get_period_data(start_date, end_date):
 # =========================================================
 
 def get_anomalies(start_date, end_date):
-    """AWS Cost Anomaly Detection findings, if available.
+    """AWS Cost Anomaly Detection findings, if available, for the
+    requested [start_date, end_date] window (end_date must not exceed
+    AWS's latest supported detection date, effectively "today" - callers
+    are responsible for that half of the constraint; see main()'s
+    anomaly_end_date). This function independently handles the *earliest*
+    supported bound: AWS's GetAnomalies only supports a rolling window
+    starting COST_ANOMALY_MAX_LOOKBACK_DAYS before today (see
+    config/settings.py), so a requested start_date earlier than that is
+    never sent to AWS as-is - the supported intersection is computed
+    first, and AWS is queried only for the portion it can actually
+    analyze (or not queried at all when there is no overlap).
 
+    Every returned dict carries this shape:
+      status: "not_configured" | "none_found" | "found" |
+              "unsupported_range" | "unavailable" (see below)
+      reason: human-readable explanation, or None for "found"
+      anomalies: the real AWS findings (only non-empty for "found")
+      requested_start / requested_end: exactly what the caller asked for
+      analyzed_start / analyzed_end: what was actually sent to AWS, or
+          None when nothing could be sent (zero overlap with the
+          supported window)
+      supported_from: the earliest date AWS currently supports (the
+          configured rolling-window floor, or AWS's own authoritative
+          boundary once observed via a ValidationException)
+      supported: True once an AWS GetAnomalies call was actually
+          attempted (regardless of found/none_found/unavailable), False
+          when the requested window has zero overlap with the supported
+          window (no AWS call made at all), None for "not_configured"
+          (AWS never got to evaluate dates - there's no monitor to ask)
+      partial: True when analyzed_start had to be moved later than
+          requested_start - i.e. only part of the requested window could
+          be analyzed
+
+    Status meanings:
     - "not_configured": account has zero AnomalyMonitors - AWS isn't
       watching for anomalies at all right now.
     - "none_found": monitors exist, GetAnomalies returned nothing for
-      this window - i.e. AWS actually checked and found nothing.
+      the analyzed window - i.e. AWS actually checked and found nothing.
     - "found": real AWS-reported anomalies, their actual
       impact/score/service/region/dates/monitor preserved as-is.
-    - "unsupported_range": AWS rejected the requested date window as
-      invalid for anomaly detection (e.g. end_date beyond AWS's latest
-      supported detection date) - a legitimate condition, distinct from
-      a real failure, so it's never confused with "unavailable".
+    - "unsupported_range": the requested window has zero overlap with
+      AWS's supported detection window - a legitimate condition,
+      distinct from a real failure, so it's never confused with
+      "unavailable" and never silently reported as "none_found".
     - "unavailable": an actual unexpected API/system error (permissions,
       throttling, network, ...) - never silently folded into
       "none_found" or "unsupported_range".
-
-    end_date must not exceed AWS's latest supported detection date
-    (effectively "today") - callers are responsible for passing a date
-    that respects that constraint; see main()'s anomaly_end_date.
 
     Both get_anomaly_monitors() and get_anomalies() are paginated via
     NextPageToken (their actual boto3 request/response field, same as
@@ -548,6 +610,24 @@ def get_anomalies(start_date, end_date):
     AWS does not provide a severity classification for an anomaly - only
     anomaly_score/max_anomaly_score and impact figures are real fields;
     no severity bucket is invented anywhere in this pipeline."""
+
+    requested_start_s = _iso_date(start_date)
+    requested_end_s = _iso_date(end_date)
+
+    def _result(status, reason, anomalies=None, analyzed_start=None, analyzed_end=None,
+                supported_from=None, supported=None, partial=False):
+        return {
+            "status": status,
+            "reason": reason,
+            "anomalies": anomalies or [],
+            "requested_start": requested_start_s,
+            "requested_end": requested_end_s,
+            "analyzed_start": _iso_date(analyzed_start) if analyzed_start else None,
+            "analyzed_end": _iso_date(analyzed_end) if analyzed_end else None,
+            "supported_from": _iso_date(supported_from) if supported_from else None,
+            "supported": supported,
+            "partial": partial,
+        }
 
     try:
         monitors = []
@@ -573,14 +653,10 @@ def get_anomalies(start_date, end_date):
 
         logger.error(f"get_anomaly_monitors failed: {exc}")
 
-        return {"status": "unavailable", "reason": str(exc), "anomalies": []}
+        return _result("unavailable", str(exc))
 
     if not monitors:
-        return {
-            "status": "not_configured",
-            "reason": "No AWS Cost Anomaly monitors configured",
-            "anomalies": [],
-        }
+        return _result("not_configured", "No AWS Cost Anomaly monitors configured")
 
     # ARN -> Name, so each anomaly below can carry its monitor's real
     # name alongside its ARN without a second AWS call - monitors was
@@ -591,46 +667,104 @@ def get_anomalies(start_date, end_date):
         if monitor.get("MonitorArn")
     }
 
-    try:
-        raw_anomalies = []
-        next_page_token = None
+    earliest_supported = _cost_anomaly_earliest_supported_date()
+    analyzed_start = max(start_date, earliest_supported)
 
-        while True:
+    if analyzed_start > end_date:
 
-            request_kwargs = {
-                "DateInterval": {"StartDate": _iso_date(start_date), "EndDate": _iso_date(end_date)},
-            }
+        # Zero overlap with AWS's supported window - do not call AWS at
+        # all, and never report this as "none_found" (that would claim
+        # AWS actually checked this window, which it didn't).
+        logger.info(
+            f"Cost anomaly detection skipped: requested_start={requested_start_s} "
+            f"requested_end={requested_end_s} supported_start={_iso_date(earliest_supported)} "
+            f"reason=unsupported_date_range"
+        )
 
-            if next_page_token:
-                request_kwargs["NextPageToken"] = next_page_token
+        reason = (
+            f"Selected period ({requested_start_s} to {requested_end_s}) is earlier than "
+            f"AWS Cost Anomaly Detection's supported window (from {_iso_date(earliest_supported)} onward)."
+        )
 
-            anomalies_response = ce.get_anomalies(**request_kwargs)
+        return _result("unsupported_range", reason, supported_from=earliest_supported, supported=False)
 
-            raw_anomalies.extend(anomalies_response.get("Anomalies") or [])
+    partial = analyzed_start > start_date
 
-            next_page_token = anomalies_response.get("NextPageToken")
+    if partial:
+        logger.info(
+            f"Cost anomaly detection partially supported: requested_start={requested_start_s} "
+            f"analyzed_start={_iso_date(analyzed_start)} supported_start={_iso_date(earliest_supported)}"
+        )
 
-            if not next_page_token:
-                break
+    # Up to 2 attempts: the configured rolling-window guess, then one
+    # retry using AWS's own authoritative boundary if a ValidationException
+    # reveals our guess drifted from AWS's real constraint. Never more
+    # than one retry - if AWS still rejects it, that's a real
+    # unsupported_range, not a loop.
+    for attempt in range(2):
 
-    except Exception as exc:
+        try:
+            raw_anomalies = []
+            next_page_token = None
 
-        if _error_code(exc) == "ValidationException":
+            while True:
 
-            # A legitimate, expected AWS constraint (e.g. the requested
-            # date window falls outside what GetAnomalies currently
-            # supports) - not a system failure, so it gets its own status
-            # rather than being folded into "unavailable".
+                request_kwargs = {
+                    "DateInterval": {"StartDate": _iso_date(analyzed_start), "EndDate": _iso_date(end_date)},
+                }
+
+                if next_page_token:
+                    request_kwargs["NextPageToken"] = next_page_token
+
+                anomalies_response = ce.get_anomalies(**request_kwargs)
+
+                raw_anomalies.extend(anomalies_response.get("Anomalies") or [])
+
+                next_page_token = anomalies_response.get("NextPageToken")
+
+                if not next_page_token:
+                    break
+
+            break  # success - stop retrying
+
+        except Exception as exc:
+
+            if _error_code(exc) != "ValidationException":
+                logger.error(f"get_anomalies failed: {exc}")
+                return _result("unavailable", str(exc), supported_from=earliest_supported)
+
+            corrected = _parse_supported_boundary(str(exc))
+
+            if attempt == 0 and corrected and corrected > analyzed_start and corrected <= end_date:
+                # Our configured rolling-window guess was stale relative
+                # to AWS's real constraint - AWS's own response told us
+                # the actual boundary, so retry once with it rather than
+                # discarding a window AWS can genuinely analyze.
+                logger.warning(
+                    f"AWS reported a later supported boundary ({corrected}) than configured "
+                    f"({earliest_supported}); retrying with AWS's own boundary"
+                )
+                earliest_supported = corrected
+                analyzed_start = corrected
+                partial = analyzed_start > start_date
+                continue
+
+            # A legitimate, expected AWS constraint - not a system
+            # failure, so it gets its own status rather than being
+            # folded into "unavailable".
             logger.warning(f"get_anomalies rejected the requested date range: {exc}")
 
-            return {"status": "unsupported_range", "reason": str(exc), "anomalies": []}
-
-        logger.error(f"get_anomalies failed: {exc}")
-
-        return {"status": "unavailable", "reason": str(exc), "anomalies": []}
+            return _result(
+                "unsupported_range", str(exc),
+                supported_from=corrected or earliest_supported, supported=False,
+            )
 
     if not raw_anomalies:
-        return {"status": "none_found", "reason": "No AWS cost anomaly detected", "anomalies": []}
+        return _result(
+            "none_found", "No AWS cost anomaly detected",
+            analyzed_start=analyzed_start, analyzed_end=end_date,
+            supported_from=earliest_supported, supported=True, partial=partial,
+        )
 
     anomalies = []
 
@@ -679,7 +813,11 @@ def get_anomalies(start_date, end_date):
             "feedback": anomaly.get("Feedback"),
         })
 
-    return {"status": "found", "reason": None, "anomalies": anomalies}
+    return _result(
+        "found", None, anomalies=anomalies,
+        analyzed_start=analyzed_start, analyzed_end=end_date,
+        supported_from=earliest_supported, supported=True, partial=partial,
+    )
 
 
 # =========================================================

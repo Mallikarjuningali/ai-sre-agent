@@ -55,6 +55,19 @@ MAX_RUN_HISTORY = 5
 
 COST_LOOKBACK_DAYS = 14
 
+# AWS Cost Anomaly Detection's GetAnomalies operation only returns results
+# within a rolling window ending "today" and starting this many days
+# before it - AWS rejects any DateInterval.StartDate earlier than that
+# floor with a ValidationException (e.g. "Earliest supported detectionDate
+# for GetRecentAnomalies is 2026-06-03"). AWS exposes no discovery API for
+# this boundary, so it is derived here as a rolling window rather than a
+# fixed calendar date (a fixed date would silently go stale as time
+# passes) - see collector/cost_explorer.py::get_anomalies(), which also
+# self-corrects from AWS's own error text if this value ever drifts from
+# AWS's real constraint.
+
+COST_ANOMALY_MAX_LOOKBACK_DAYS = 90
+
 # =========================================================
 # Follow-Up Question Configuration
 # =========================================================

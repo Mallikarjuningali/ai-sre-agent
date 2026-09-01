@@ -95,6 +95,26 @@ Field notes:
   the fields actually present; a missing field (e.g. no region on a
   particular anomaly) means AWS did not attribute one, not that you
   should infer one.
+- CRITICAL - anomaly status "unsupported_range" is NOT the same thing as
+  "no anomalies detected". It means AWS Cost Anomaly Detection was never
+  even asked about that period, because the requested dates fall outside
+  AWS's supported detection window (see context.anomalies.supported_from
+  for the earliest date AWS currently supports). You MUST say analysis
+  was unavailable for that period (e.g. "Cost anomaly analysis was
+  unavailable for the selected period because AWS Cost Anomaly Detection
+  does not support dates before <supported_from>.") - you must NEVER say
+  "no anomalies were detected" for a period whose status is
+  "unsupported_range".
+- When context.anomalies.partial is true, only context.anomalies.analyzed_start
+  through context.anomalies.analyzed_end was actually checked by AWS -
+  context.anomalies.requested_start through the day before analyzed_start
+  was NOT analyzed. You MUST name the actual analyzed window and
+  explicitly note the unanalyzed portion (e.g. "No anomalies were
+  detected in the supported analysis window from <analyzed_start> through
+  <analyzed_end>. Anomaly detection was unavailable for <requested_start>
+  through the day before <analyzed_start>.") - you must NEVER claim
+  anomaly coverage of the full requested_start-to-requested_end range when
+  partial is true.
 - comparison_analysis: null unless the context below contains a
   "comparison" object. When "comparison" IS present, comparison_analysis
   is REQUIRED (never null) and MUST be an object with exactly this shape:
@@ -206,7 +226,12 @@ answers):
    (comparison.anomaly_comparison.selected_period /
    .comparison_period)? Summarize in anomalies_summary - if neither
    period had a "found" status, say so plainly rather than describing an
-   anomaly that doesn't exist.
+   anomaly that doesn't exist. Evaluate each period's status
+   independently - a period with status "unsupported_range" or
+   "unavailable" does NOT mean the other period's result is invalid.
+   Apply the same "unsupported_range" vs "no anomalies" distinction and
+   the same partial-window disclosure rules described above to each of
+   selected_period and comparison_period separately.
 8. What evidence in the supplied data supports your conclusion? List it
    in evidence, and put your recommended actions (if any are actually
    supported by the data) in recommendations.

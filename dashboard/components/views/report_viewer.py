@@ -499,6 +499,21 @@ def _render_conversation_turn(turn: dict) -> None:
     )
 
 
+def _follow_up_input_key(report_key: str) -> str:
+    """The composer's widget key, suffixed with a per-card version counter
+    (see _handle_follow_up_question) that only advances after a
+    successful submission. Popping a text_input's session_state entry and
+    rerunning is enough on the Python side, but Streamlit's frontend can
+    still leave a stale value rendered in the actual <input> element for
+    a key it has already mounted once; bumping the version gives the
+    composer a genuinely new widget key each time, forcing a fresh, truly
+    empty input rather than relying on that in-place reset. The
+    conversation history (a separate, persisted state) is never touched
+    by this - only the composer's own widget identity changes."""
+    version = st.session_state.get(f"follow_up_question_version_{report_key}", 0)
+    return f"follow_up_question_{report_key}_v{version}"
+
+
 def _render_follow_up_card(services, run_id: str, report: dict, report_key: str) -> None:
     investigation_id = _investigation_id_for(run_id, report)
 
@@ -527,7 +542,7 @@ def _render_follow_up_card(services, run_id: str, report: dict, report_key: str)
         if error:
             st.error(error)
 
-        input_key = f"follow_up_question_{report_key}"
+        input_key = _follow_up_input_key(report_key)
         col_input, col_button = st.columns([5, 1])
         with col_input:
             question = st.text_input(
@@ -540,11 +555,22 @@ def _render_follow_up_card(services, run_id: str, report: dict, report_key: str)
             ask_clicked = st.button("Ask", key=f"follow_up_ask_{report_key}", width="stretch", type="primary")
 
         if ask_clicked:
-            _handle_follow_up_question(services, investigation_id, question, report_key, input_key)
+            submitting_key = f"follow_up_submitting_{report_key}"
+            if not st.session_state.get(submitting_key):
+                # A request for this card is already in flight (a rapid
+                # double-click landing two events in the same run) -
+                # ignore the extra click rather than firing a second
+                # follow-up request; this flag is always cleared again
+                # right before the resulting rerun, below.
+                st.session_state[submitting_key] = True
+                _handle_follow_up_question(services, investigation_id, question, report_key, input_key, submitting_key)
 
 
-def _handle_follow_up_question(services, investigation_id: str, question: str, report_key: str, input_key: str) -> None:
+def _handle_follow_up_question(
+    services, investigation_id: str, question: str, report_key: str, input_key: str, submitting_key: str
+) -> None:
     if not (question or "").strip():
+        st.session_state.pop(submitting_key, None)
         st.session_state[f"{_FOLLOW_UP_ERROR_KEY}_{report_key}"] = "Please enter a question before clicking Ask."
         st.rerun()
         return
@@ -555,11 +581,21 @@ def _handle_follow_up_question(services, investigation_id: str, question: str, r
     except FollowUpActionError as exc:
         # The investigation data itself is untouched and the prior
         # conversation is not lost - only this one new question failed.
+        # The composer is deliberately left untouched (no input_key
+        # change, no pop) so the user's question is still there to retry.
+        st.session_state.pop(submitting_key, None)
         st.session_state[f"{_FOLLOW_UP_ERROR_KEY}_{report_key}"] = str(exc)
         st.rerun()
         return
 
-    # Clear the input for the next question - popped before rerun so the
-    # widget re-renders empty instead of keeping the just-asked text.
+    # Success: the question + answer are already persisted server-side
+    # (services.follow_up.ask() itself appended the turn) and will show up
+    # in conversation history on the next render via get_conversation().
+    # Advance the composer's version so it renders as a brand new,
+    # genuinely empty widget - see _follow_up_input_key().
+    st.session_state.pop(submitting_key, None)
+    st.session_state[f"follow_up_question_version_{report_key}"] = (
+        st.session_state.get(f"follow_up_question_version_{report_key}", 0) + 1
+    )
     st.session_state.pop(input_key, None)
     st.rerun()

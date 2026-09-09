@@ -25,7 +25,7 @@ An intelligent observability platform that automatically collects AWS infrastruc
 
 AI SRE Agent is an intelligent cloud observability and incident analysis platform built for AWS environments. It runs **two independent pipelines**:
 
-1. **Infrastructure Investigation** — continuously (or on demand) collects telemetry from EC2, Application Load Balancers, Auto Scaling Groups, and CloudTrail, transforms it into structured AI context, and uses Google Gemini to perform automated Root Cause Analysis — either across the whole account ("Full Investigation") or for one specific, user-picked resource ("Single Resource Investigation").
+1. **Infrastructure Investigation** — continuously (or on demand) collects telemetry from EC2, Application Load Balancers, Auto Scaling Groups, and CloudTrail, transforms it into structured AI context, and uses Google Gemini to perform automated Root Cause Analysis — either across the whole account ("Full Investigation") or for one specific, user-picked resource ("Single Resource Investigation"). Every completed investigation can then be deepened, entirely on demand, with **Follow-Up Questions** (evidence-grounded Q&A about that specific RCA) and an **optional Log Investigation** (a bounded, sanitized log analysis stage that never runs automatically).
 2. **Cost Explorer** — a completely separate pipeline that pulls real AWS Cost Explorer billing data (gross cost, credits, net cost, service/region breakdowns, cost anomalies) and uses Gemini to explain cost changes in plain language.
 
 Both pipelines are exposed through a **FastAPI backend** and a **Streamlit dashboard**, so the whole platform is usable live, not just as a CLI script. Instead of manually reviewing CloudWatch metrics, Auto Scaling events, Load Balancer health, CloudTrail logs, and Cost Explorer reports, the AI SRE Agent correlates the signals and generates human-readable incident and cost reports with severity classification, root causes, evidence, and remediation recommendations.
@@ -44,15 +44,30 @@ The project follows a modular architecture, making it easy to extend with additi
 - 🧠 AI-powered Root Cause Analysis using Google Gemini (severity, root cause, evidence, recommendations)
 - 📄 Structured JSON incident reports, execution logging with retry/backoff, automatic archival per run
 
+**Follow-Up Questions ("Ask AegisOps")**
+- 💬 Ask evidence-grounded follow-up questions about any completed RCA, directly on the Investigation Report page
+- 🔒 Answers are grounded only in that investigation's own sanitized evidence — Gemini is explicitly instructed never to answer from general knowledge and to say so plainly when the evidence is insufficient
+- 🧾 Per-investigation conversation history persisted server-side (`output/conversations/`), survives page reloads
+- 🛑 The original RCA/severity/report is immutable — a follow-up answer never overwrites it, and a question about a superseded (re-investigated) resource is rejected with a clear message
+
+**Optional Log Investigation**
+- 🔍 A "🔍 Investigate Logs" button on the Investigation Report page — logs are **never** collected automatically, only on explicit click
+- 🪟 A bounded incident window is derived from the resource's own metric threshold breaches (never a hardcoded 24-hour scan)
+- 📉 Local, deterministic reduction (time filter → relevance filter → normalize → deduplicate → aggregate into patterns → timeline → bounded representative samples) turns potentially millions of raw log lines into a compact evidence package before anything reaches Gemini
+- 🧼 A **second, isolated** log sanitizer (separate from the infrastructure sanitizer) strips IPs, hostnames, URLs, auth headers, tokens, and connection strings while preserving timestamps, status codes, exception types, and counts
+- ⚖️ Real, resource-specific log sources — CloudWatch Logs for EC2, S3-delivered access logs for ALB, scaling activities for Auto Scaling Groups — with an honest "logs unavailable" state that is never confused with "no errors found"
+- 🧩 Gemini's log analysis is shown as a clearly-labeled *supplementary* result — it can propose an updated root cause/confidence, but the original RCA report is never silently overwritten
+
 **Cost Explorer**
 - 💳 Real AWS Cost Explorer data: gross cost, AWS credits applied, and net cost — clearly separated, never blended
 - 🧾 Service- and region-level cost *and* credit attribution (a service fully offset by credits still shows its real usage instead of disappearing at $0)
 - 🟠 AWS Cost Anomaly Detection findings with every real field (service, region, dates, score, impact, actual/expected spend)
-- 🔀 User-selectable Month/Period Comparison, with Gemini's explanation grounded in the exact two periods being compared
+- 🪟 Correctly handles AWS's rolling supported detection window — a selected period only partially covered by AWS's anomaly-detection floor is analyzed for its supported portion and clearly labeled "partial," never silently reported as "no anomalies"
+- 🔀 User-selectable Month/Period Comparison, with Gemini's explanation grounded in the exact two periods being compared, across a two-tab **Cost Overview** / **Cost Comparison** layout sharing one date picker
 - 🤖 AI cost analysis that never invents a causal story or a resource-level credit attribution AWS doesn't actually support
 
 **Platform**
-- 🌐 FastAPI backend exposing both pipelines over HTTP (start/poll investigations, refresh cost data, read published dashboard feeds)
+- 🌐 FastAPI backend exposing both pipelines over HTTP (start/poll investigations, ask follow-up questions, trigger log investigations, refresh cost data, read published dashboard feeds)
 - 📉 Streamlit dashboard — Overview, Investigation, Investigation Report, Execution History, Analytics, Cost Explorer, and Settings pages
 - 🐳 Docker-based monitoring stack with Prometheus, Grafana, Loki, and Promtail
 
@@ -116,6 +131,22 @@ The workflow illustrates how infrastructure data moves through the platform—fr
 
 Two entry points into this same pipeline are supported: **Full Investigation** (every discovered resource) and **Single Resource Investigation** (one resource, picked from a live AWS discovery call — no dependency on a previous Full Investigation).
 
+### Follow-Up Questions Workflow (optional, on demand)
+
+1. Open a completed report on the **Investigation Report** page and ask a question in the **"Ask AegisOps"** card.
+2. The backend re-reads that resource's existing report + context (no new AWS calls), builds a deterministic timeline from the same evidence already collected, and sanitizes it with the existing infrastructure sanitizer.
+3. Gemini answers using only that evidence, explicitly labeling observed facts vs. inference vs. hypothesis, and says so plainly if the evidence is insufficient.
+4. The question and answer are appended to a persisted, per-investigation conversation (`output/conversations/`) — the original report is never modified.
+
+### Optional Log Investigation Workflow (never automatic)
+
+1. On the same Investigation Report page, click **"🔍 Investigate Logs"** — nothing runs until this is clicked.
+2. A bounded incident window is derived from the resource's own metric threshold breaches (falling back to a small, clearly-labeled window when no confident breach exists).
+3. The resource's real log source is discovered and fetched for that window only — CloudWatch Logs (EC2), S3 access logs (ALB), or scaling activities (ASG).
+4. Raw events are filtered, normalized, deduplicated into patterns, and reduced into a compact evidence package locally — before anything is sent anywhere.
+5. A **second, isolated** log sanitizer strips sensitive values (IPs, hostnames, URLs, tokens, credentials) from that package.
+6. Gemini analyzes the sanitized package alongside the existing RCA and reports whether it materially changes the original conclusion — shown as a clearly-labeled supplementary result, never overwriting the original report.
+
 ### Cost Explorer Workflow
 
 1. **Collect** real AWS Cost Explorer data (total/daily cost, credits, service & region breakdown, cost anomalies) for the current period and the previous equal-length period, plus an optional user-selected comparison period.
@@ -136,12 +167,12 @@ The project is organized into independent modules following a modular architectu
 ```text
 ai-sre-agent/
 ├── analyzer/          # AI analysis orchestration (infra + Cost Explorer)
-├── api/               # FastAPI backend - investigation & cost-explorer endpoints
-├── collector/         # AWS telemetry collectors (CloudWatch, ALB, ASG, CloudTrail, Cost Explorer)
+├── api/               # FastAPI backend - investigation, follow-up, log investigation & cost-explorer endpoints
+├── collector/         # AWS telemetry collectors (CloudWatch, ALB, ASG, CloudTrail, Cost Explorer, optional Logs)
 ├── config/            # Configuration management
-├── context/           # AI context generation (infra + Cost Explorer)
+├── context/           # AI context generation (infra + Cost Explorer + Log Evidence Builder)
 ├── dashboard/         # Streamlit dashboard (pages, components, services)
-├── llm/               # Gemini integration (prompt builders + sanitizers, infra + Cost Explorer)
+├── llm/               # Gemini integration (prompt builders + sanitizers, infra + Cost Explorer + Follow-Up + Log Investigation)
 ├── monitoring/        # Prometheus, Grafana, Loki & Promtail
 ├── utils/             # Shared utilities (writers, dashboard export, logging, archiving)
 ├── correlator/        # Correlation engine (currently unused/not wired in)
@@ -170,6 +201,10 @@ Responsible for collecting infrastructure telemetry and Cost Explorer billing da
 
 - `collector/cost_explorer.py` — total/daily cost, credit history, service & region breakdown (net *and* credit-only), cost anomalies. Fully separate AWS API surface (`ce` client) and output tree from the infrastructure collectors above.
 
+**Log Investigation module (optional, on demand only)**
+
+- `collector/logs.py` — discovers and fetches a single resource's real log source for a bounded time window: CloudWatch Logs (EC2), S3-delivered access logs (ALB), scaling activities (ASG). Never part of the automatic collector sequence above — invoked only when a user clicks "Investigate Logs".
+
 **Output**
 
 ```text
@@ -191,6 +226,8 @@ Responsibilities
 - Prepare AI-ready JSON
 
 A separate `context/cost_context_builder.py` performs the equivalent job for Cost Explorer — deriving Gross Cost / Credits / Net Cost per period, per service, and per region.
+
+`context/log_evidence_builder.py` performs the equivalent reduction job for the optional Log Investigation feature — filters, normalizes, deduplicates, and aggregates raw log events into a compact, bounded "Log Evidence Package" (patterns, timeline, representative samples) entirely locally, before anything is sanitized or sent to Gemini. `utils/incident_window.py` derives the bounded time window it operates on, from the resource's own metric threshold breaches.
 
 **Output**
 
@@ -219,7 +256,7 @@ Responsibilities
 - Reduce hallucinations
 - Explicitly constrain the response schema (e.g. cost drivers must be plain names, not raw data structures; Gemini must never claim data AWS doesn't actually provide)
 
-`llm/prompt_builder.py` (infrastructure) and `llm/cost_prompt_builder.py` (Cost Explorer) are completely independent, each paired with its own sanitizer (`llm/sanitizer.py` / `llm/cost_sanitizer.py`).
+`llm/prompt_builder.py` (infrastructure), `llm/cost_prompt_builder.py` (Cost Explorer), `llm/follow_up_prompt_builder.py` (Follow-Up Questions), and `llm/log_prompt_builder.py` (Log Investigation) are completely independent prompt builders, each paired with its own sanitizer. Follow-Up reuses the existing infrastructure sanitizer (`llm/sanitizer.py`) unchanged; Log Investigation uses a **brand-new, isolated** `llm/log_sanitizer.py` that operates only on the reduced Log Evidence Package and is never imported into the core RCA pipeline — `llm/sanitizer.py` itself is never modified by either feature.
 
 ---
 
@@ -253,6 +290,8 @@ Responsibilities
 
 `analyzer/analyzer.py` (infrastructure — supports both Full and Single Resource investigation) and `analyzer/cost_analyzer.py` (Cost Explorer) are separate orchestrators.
 
+Follow-Up Questions and Log Investigation are each orchestrated by their own manager instead (`api/follow_up_manager.py`, `api/log_investigation_manager.py`) — both only ever *read* an existing report/context (never re-run collectors or re-invoke the core Analyzer), so neither can interfere with a Full or Single Resource Investigation in progress.
+
 ---
 
 ## 📝 Report Writer
@@ -264,7 +303,11 @@ Stores AI-generated reports.
 ```text
 output/reports/         # one JSON report per infrastructure resource
 output/cost/reports/     # one Cost Explorer report per refresh
+output/conversations/   # Follow-Up Q&A conversation history, one file per investigation
+output/log_investigations/ # Log Investigation results, one file per investigation
 ```
+
+The original `output/reports/<resource_id>.json` is treated as immutable by both Follow-Up Questions and Log Investigation — neither ever writes to it. Both use the same `investigation_id = "{run_id}__{resource_id}"` scheme and the same staleness check (a resource re-investigated since a report was opened is rejected with a clear message, never silently answered against stale evidence).
 
 ---
 
@@ -315,11 +358,13 @@ A FastAPI application (`api/app.py`) exposing both pipelines over HTTP:
 
 - `POST /investigation/full`, `POST /investigation/resource`, `GET /investigation/status/{run_id}` — start and poll infrastructure investigations
 - `GET /investigation/resources` — live AWS resource discovery for the Single Resource picker
+- `POST /investigation/{investigation_id}/follow-up`, `GET /investigation/{investigation_id}/follow-up` — ask a follow-up question about a completed report, and read back its conversation history
+- `POST /investigation/{investigation_id}/logs`, `GET /investigation/{investigation_id}/logs` — trigger the optional Log Investigation stage, and read back its persisted result
 - `POST /cost-explorer/refresh` plus `GET /cost-explorer/{summary,history,credits,services,regions,anomalies,comparison,report}` — trigger and read Cost Explorer data
 - Read-only passthrough of every published dashboard feed file, so the dashboard can run against a live backend instead of local fixtures
 - `DELETE /executions` — clean up execution history
 
-`api/investigation_manager.py` and `api/cost_explorer_manager.py` orchestrate their respective pipelines independently, each with its own lock, so a Cost Explorer refresh can never block or collide with an infrastructure investigation.
+`api/investigation_manager.py`, `api/cost_explorer_manager.py`, `api/follow_up_manager.py`, and `api/log_investigation_manager.py` orchestrate their respective pipelines independently, each with its own lock/state, so a Cost Explorer refresh, a follow-up question, or a log investigation can never block or collide with an infrastructure investigation in progress.
 
 ---
 
@@ -331,7 +376,7 @@ A Streamlit application (`dashboard/app.py`) with the following pages:
 |------|---------|
 | Overview | Account-wide health KPIs and recent activity |
 | Investigation | Launch a Full or Single Resource investigation, live progress |
-| Investigation Report | View a completed RCA report (severity, root cause, evidence, recommendations, telemetry) |
+| Investigation Report | View a completed RCA report (severity, root cause, evidence, recommendations, telemetry), ask follow-up questions ("Ask AegisOps"), and optionally trigger a Log Investigation ("🔍 Investigate Logs") |
 | Execution History | Past runs, with deletion support |
 | Analytics | Trends across executions (incidents, severity, resource distribution) |
 | Cost Explorer | Gross/Credits/Net cost, service & region breakdown, credits, anomalies, period comparison, AI cost analysis |
@@ -403,6 +448,12 @@ output/
 ├── prompts/
 │   └── <resource_id>.txt        # persisted Gemini prompts, for debugging
 │
+├── conversations/
+│   └── <run_id>__<resource_id>.json   # Follow-Up Q&A conversation history
+│
+├── log_investigations/
+│   └── <run_id>__<resource_id>.json   # optional Log Investigation results
+│
 ├── logs/
 │   └── execution.log
 │
@@ -430,6 +481,8 @@ output/
 | `context/` | AI-ready infrastructure context generated from collected data |
 | `reports/` | AI-generated Root Cause Analysis reports |
 | `prompts/` | Persisted Gemini prompts (debugging aid) |
+| `conversations/` | Follow-Up Q&A conversation history, one file per investigation (`run_id__resource_id`) - never overwrites the original report |
+| `log_investigations/` | Optional Log Investigation results (evidence package + AI analysis), one file per investigation - only created if "Investigate Logs" was clicked |
 | `logs/` | Structured execution logs |
 | `summary/` | Dashboard-friendly execution metadata, one file per run |
 | `dashboard_feed/` | Published, dashboard-ready JSON, one file per page/concern |
@@ -570,6 +623,80 @@ Cost Explorer is only served from `us-east-1` by AWS regardless of your account'
 
 ---
 
+## Configure Log Investigation (Optional)
+
+The **Log Investigation** feature ("🔍 Investigate Logs" on the Investigation Report page) is entirely optional and only runs when explicitly clicked — no additional configuration is required for the rest of the platform to work. Nothing below is required unless you want to actually use this feature for a given resource.
+
+### IAM permissions
+
+The credentials configured above need these additional permissions, depending on which resource types you want to investigate logs for:
+
+| Resource | Required IAM actions |
+|----------|----------------------|
+| EC2 | `logs:DescribeLogGroups`, `logs:DescribeLogStreams`, `logs:FilterLogEvents` |
+| Application Load Balancer | `elasticloadbalancing:DescribeLoadBalancers`, `elasticloadbalancing:DescribeLoadBalancerAttributes`, `s3:ListBucket`, `s3:GetObject` (on the bucket ALB access logs are delivered to) |
+| Auto Scaling Group | `autoscaling:DescribeScalingActivities` (already required for the normal Auto Scaling collector) |
+
+None of these are required for Full/Single Resource Investigation, Follow-Up Questions, or Cost Explorer — they're only exercised when a log investigation is actually triggered for that specific resource type.
+
+### Fixing "no configured CloudWatch Logs stream was found for this instance" (EC2)
+
+This message means AegisOps looked for, but could not find, a CloudWatch Logs log stream named after the instance's own ID (e.g. `i-0abc123`) in any of the log groups it scanned. This is exactly how the [Unified CloudWatch Agent](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/Install-CloudWatch-Agent.html) names log streams by default, so to make an EC2 instance's logs discoverable:
+
+1. **Install the CloudWatch Agent** on the instance, if it isn't already:
+   ```bash
+   sudo yum install amazon-cloudwatch-agent   # Amazon Linux / RHEL
+   # or: sudo apt install amazon-cloudwatch-agent   # Debian/Ubuntu
+   ```
+2. **Configure it to ship a log file**, with `log_stream_name` set to the instance ID placeholder (this is also the Agent's own default if `log_stream_name` is omitted entirely):
+   ```json
+   {
+     "logs": {
+       "logs_collected": {
+         "files": {
+           "collect_list": [
+             {
+               "file_path": "/var/log/myapp/application.log",
+               "log_group_name": "/myapp/application",
+               "log_stream_name": "{instance_id}"
+             }
+           ]
+         }
+       }
+     }
+   }
+   ```
+   Save this as `/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json` and start/reload the agent:
+   ```bash
+   sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+     -a fetch-config -m ec2 -s -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+   ```
+3. **Attach an IAM role/policy to the instance** granting it `logs:CreateLogGroup`, `logs:CreateLogStream`, and `logs:PutLogEvents` (the standard `CloudWatchAgentServerPolicy` managed policy covers this) so it can actually deliver logs.
+4. If the instance already has many unrelated log groups in the account, discovery is bounded by `LOG_MAX_GROUPS_SCANNED` (`config/settings.py`) — if your instance's log group happens to be scanned after that limit, either raise the limit or keep the relevant log groups easy to find (e.g. a consistent naming prefix).
+
+Once a log group + stream named after the instance ID exists, "Investigate Logs" will find and use it automatically — no code or endpoint changes needed.
+
+### Enabling ALB access logs
+
+By default, ALBs do **not** have access logging enabled — this is a real, off-by-default AWS setting, not an AegisOps limitation. To enable it:
+
+1. In the AWS Console: **EC2 → Load Balancers → (your ALB) → Attributes → Monitoring → Edit** → turn on **Monitor access logs**, and pick/create an S3 bucket.
+2. Or via CLI:
+   ```bash
+   aws elbv2 modify-load-balancer-attributes \
+     --load-balancer-arn <your-alb-arn> \
+     --attributes Key=access_logs.s3.enabled,Value=true Key=access_logs.s3.bucket,Value=<your-bucket-name>
+   ```
+3. AWS requires the destination bucket to have a specific bucket policy granting the ELB service account permission to write to it — see [AWS's own access-logging setup guide](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/enable-access-logging.html) for the exact policy for your region.
+
+Until this is enabled, "Investigate Logs" for that ALB will correctly report **"Logs unavailable for this resource"** — never a fabricated "no anomalies" or "no errors found."
+
+### Auto Scaling Groups
+
+No extra configuration is needed — scaling activities (`describe_scaling_activities`) are always queryable for any existing ASG using the same IAM permission the normal Auto Scaling collector already requires.
+
+---
+
 # ⚙️ Configuration File
 
 Project settings are managed from:
@@ -590,6 +717,14 @@ Examples:
 | `MAX_RETRIES` / `INITIAL_RETRY_DELAY` / `REQUEST_DELAY` | Retry/backoff behavior for Gemini calls |
 | `MAX_RUN_HISTORY` | How many past runs are retained |
 | `COST_LOOKBACK_DAYS` | Cost Explorer's default current/previous period length |
+| `COST_ANOMALY_MAX_LOOKBACK_DAYS` | Rolling window AWS Cost Anomaly Detection supports - self-corrects from AWS's own error text if it ever drifts |
+| `FOLLOW_UP_MAX_CONVERSATION_MESSAGES` / `FOLLOW_UP_PROMPT_HISTORY_MESSAGES` | How much Follow-Up conversation is stored vs. actually sent to Gemini per question |
+| `FOLLOW_UP_MAX_QUESTION_LENGTH` | Rejects (rather than silently truncates) an oversized follow-up question |
+| `LOG_INCIDENT_WINDOW_BEFORE_MINUTES` / `LOG_INCIDENT_WINDOW_AFTER_MINUTES` | Buffer added around a derived incident window before fetching logs |
+| `LOG_FALLBACK_WINDOW_MINUTES` | Bounded window used when no confident incident window can be derived from metrics |
+| `LOG_MAX_GROUPS_SCANNED` / `LOG_MAX_S3_OBJECTS_SCANNED` | Bounds on discovering an EC2 CloudWatch Logs stream / listing ALB S3 access-log objects - see [Configure Log Investigation](#configure-log-investigation-optional) below |
+| `LOG_MAX_RAW_EVENTS` / `LOG_MAX_RELEVANT_EVENTS` / `LOG_MAX_PATTERNS` | Hard caps on the Log Investigation pipeline's raw event volume, filtered events, and distinct patterns |
+| `LOG_MAX_EVIDENCE_PACKAGE_BYTES` | Final size cap on the Log Evidence Package sent to Gemini |
 
 ---
 
@@ -768,7 +903,9 @@ A Streamlit-based dashboard is fully implemented, providing a centralized interf
 - 📊 Execution Summary Dashboard
 - 📜 Historical Execution History, with deletion
 - 📁 Investigation Report viewer
-- 💳 Cost Explorer — Gross/Credits/Net cost, service & region breakdown, cost anomalies, period comparison, AI cost analysis
+- 💬 Follow-Up Questions ("Ask AegisOps") — evidence-grounded Q&A about a completed report, with persisted conversation history
+- 🔍 Optional Log Investigation — on-demand, sanitized log analysis that supplements (never overwrites) the original RCA
+- 💳 Cost Explorer — Gross/Credits/Net cost, service & region breakdown, cost anomalies (with correct partial/unsupported date-range handling), period comparison, AI cost analysis
 - 🌙 Dark/light theme support
 
 ---
@@ -784,9 +921,11 @@ A Streamlit-based dashboard is fully implemented, providing a centralized interf
 - FastAPI backend for both pipelines
 - Full Infrastructure Investigation and Single Resource Investigation
 - Live AWS resource discovery for Single Resource Investigation
+- Follow-Up Questions ("Ask AegisOps") — evidence-grounded, per-investigation conversation, original RCA immutable
+- Optional Log Investigation — bounded incident window, deterministic local reduction pipeline, isolated log sanitizer, supplementary AI analysis
 - AWS Cost Explorer collector, context builder, and Gemini cost analysis
 - Gross Cost / Credits / Net Cost data model with service & region credit attribution
-- AWS Cost Anomaly Detection integration
+- AWS Cost Anomaly Detection integration, including correct handling of AWS's rolling supported detection window (partial/unsupported ranges never reported as "no anomalies")
 - Streamlit Dashboard (Overview, Investigation, Investigation Report, Execution History, Analytics, Cost Explorer, Settings)
 - Docker Monitoring Stack
 - GitHub Repository

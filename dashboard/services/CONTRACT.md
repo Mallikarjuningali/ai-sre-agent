@@ -286,6 +286,75 @@ The AI never invents evidence: if the supplied investigation data doesn't
 establish an answer, `answer` says so explicitly rather than guessing, and
 `confidence` reflects that (`LOW`).
 
+## Log investigation — LogInvestigationService (Investigation Report page, "🔍 Investigate Logs")
+
+Made by `services/log_investigation_service.py` the same write-ish/live-
+backend way as Follow-up questions above (REST-only; local/S3 surfaces a
+clear error instead of pretending to fetch logs). Optional and explicitly
+user-triggered only - never runs during a normal Full/Single Resource
+Investigation, and never collects logs unless this action is invoked.
+`api/log_investigation_manager.py` only reads the existing
+`output/reports/<resource_id>.json` / `output/context/<resource_id>.json`
+for the resource in question, derives a bounded incident window from its
+own metric data, fetches a bounded window of that resource type's real
+log/event source (CloudWatch Logs for EC2, S3-delivered access logs for
+ALB, scaling activities for ASG), reduces it locally, and sanitizes it
+through a brand-new, isolated `llm/log_sanitizer.py` - completely separate
+from `llm/sanitizer.py`, which the original RCA prompt continues to use
+unchanged.
+
+`investigation_id` is `f"{run_id}__{resource_id}"` - the exact same shape/
+derivation Follow-up questions already use.
+
+```
+POST /investigation/{investigation_id}/logs
+  request:  (no body)
+  response: {
+    "investigation_id": "...", "resource_id": "...", "resource_type": "EC2|Load Balancer|Auto Scaling Group",
+    "evidence_package": {
+      "log_source": "cloudwatch_logs|alb_access_logs|asg_scaling_activities|unavailable",
+      "requested_window": { "start": "...", "end": "...", "confidence": "derived|inferred" },
+      "analyzed_window": { "start": "...", "end": "..." },
+      "total_events": 0, "relevant_events": 0,
+      "patterns": [ { "pattern": "...", "count": 0, "first_seen": "...", "last_seen": "...", "examples": ["..."] } ],
+      "timeline": [ { "timestamp": "...", "description": "..." } ],
+      "representative_events": [ { "timestamp": "...", "message": "..." } ],
+      "limitations": [ "..." ]
+    },
+    "analysis": {
+      "log_analysis_summary": "...", "materially_changes_rca": false,
+      "updated_root_cause": null, "updated_confidence": null,
+      "evidence_citations": [ "..." ], "uncertainty": [ "..." ],
+      "evidence_status": { "found": [], "not_found": [], "unavailable": [], "truncated": [] }
+    }
+  }
+
+GET /investigation/{investigation_id}/logs
+  response: { "investigation_id": "...", "investigated": bool, ... }
+```
+
+`investigated` is `false` (with no other keys) when "Investigate Logs" has
+never been clicked for this investigation - not an error.
+
+`evidence_package.log_source == "unavailable"` means the resource's log
+source was never successfully queried (not configured, or the resource
+could no longer be found) - this is deliberately distinct from
+`total_events`/`relevant_events` both being `0` with a real `log_source`
+name, which means the source WAS queried and genuinely had nothing
+relevant. The dashboard must never conflate the two.
+
+`analysis.updated_root_cause`/`updated_confidence` are Gemini's *proposed*
+update, shown as "Additional/Updated RCA" - they are never written back
+into the original `output/reports/<resource_id>.json`; the original RCA,
+severity, and evidence remain exactly as they were.
+
+Error responses: `404` if the resource has no report/context yet, `409`
+if the resource has been **reinvestigated since** (same immutability
+guarantee as Follow-up questions), `400` if the resource type has no
+supported log source (only EC2/ALB/ASG), `503` if the Gemini call itself
+fails or times out, `502` for a genuine AWS API failure while discovering/
+fetching logs.
+
 ## Adding a new backend
 
 Implement `DataSource` in `services/data_source.py` (see

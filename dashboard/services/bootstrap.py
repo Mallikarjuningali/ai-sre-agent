@@ -12,6 +12,7 @@ from .execution_service import ExecutionService, get_execution_backend
 from .follow_up_service import FollowUpService, get_follow_up_backend
 from .history_service import HistoryService
 from .investigation_service import InvestigationService, get_investigation_backend
+from .log_investigation_service import LogInvestigationService, get_log_investigation_backend
 from .report_service import ReportService
 from .resource_service import ResourceService
 from .resource_discovery_service import ResourceDiscoveryService, get_resource_discovery_backend
@@ -33,6 +34,7 @@ class Services:
     cost_explorer: CostExplorerService
     cost_refresh: CostRefreshService
     follow_up: FollowUpService
+    log_investigation: LogInvestigationService
 
 
 def build_services(config: AppConfig) -> Services:
@@ -52,4 +54,5 @@ def build_services(config: AppConfig) -> Services:
         cost_explorer=CostExplorerService(ds, ttl),
         cost_refresh=CostRefreshService(get_cost_explorer_backend(config)),
         follow_up=FollowUpService(get_follow_up_backend(config)),
+        log_investigation=LogInvestigationService(get_log_investigation_backend(config)),
     )

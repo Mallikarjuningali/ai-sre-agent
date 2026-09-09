@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from services import FollowUpActionError
+from services import FollowUpActionError, LogInvestigationActionError
 
 from ..badges import new_badge, severity_badge, status_badge
 from ..cards import card, card_title, empty_state
@@ -21,6 +21,8 @@ _SEVERITY_RANK = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
 _RUN_ID_KEY = "report_viewer_run_id"
 _EXPANDED_KEY = "report_viewer_expanded_id"
 _FOLLOW_UP_ERROR_KEY = "report_viewer_follow_up_error"
+_LOG_INVESTIGATION_ERROR_KEY = "report_viewer_log_investigation_error"
+_LOG_INVESTIGATION_SUPPORTED_TYPES = ("EC2 Instance", "Load Balancer", "Auto Scaling Group")
 
 
 def render(services, config) -> None:
@@ -93,6 +95,9 @@ def render(services, config) -> None:
                 _render_telemetry_card(report)
             with col_confidence:
                 _render_confidence_card(report)
+
+            st.markdown("<div style='height:0.9rem'></div>", unsafe_allow_html=True)
+            _render_log_investigation_card(services, run_id, report, report_key)
 
             st.markdown("<div style='height:0.9rem'></div>", unsafe_allow_html=True)
             _render_follow_up_card(services, run_id, report, report_key)
@@ -406,6 +411,206 @@ def _render_confidence_card(report: dict) -> None:
             unsafe_allow_html=True,
         )
         st.progress(pct)
+
+
+# ---------------------------------------------------------------------------
+# Optional Log Investigation - "🔍 Investigate Logs". Explicitly user-
+# triggered only; no log is ever collected just by viewing this report -
+# see api/log_investigation_manager.py for the backend. This section only
+# renders what the backend actually returns; the original RCA above is
+# never modified by anything in this section - a materially-changing
+# result is shown as a clearly separate "Additional/Updated RCA" block,
+# never substituted into the Root Cause card above.
+# ---------------------------------------------------------------------------
+
+_LOG_ANALYSIS_LABELS = {
+    "cloudwatch_logs": "CloudWatch Logs",
+    "alb_access_logs": "ALB Access Logs (S3)",
+    "asg_scaling_activities": "Scaling Activities",
+}
+
+
+def _log_investigation_id_for(run_id: str, report: dict) -> str | None:
+    resource_type = report.get("resource_type")
+    if resource_type not in _LOG_INVESTIGATION_SUPPORTED_TYPES:
+        return None
+    return _investigation_id_for(run_id, report)
+
+
+def _render_log_pattern_row(pattern: dict) -> None:
+    examples = pattern.get("examples") or []
+    example_html = ""
+    if examples:
+        example_html = (
+            '<div style="font-size:12px; color:var(--text-muted); margin-top:2px; font-family:monospace;">'
+            f'{examples[0]}</div>'
+        )
+    st.markdown(
+        f"""
+        <div style="padding:0.5rem 0; border-bottom:1px solid var(--border-subtle);">
+          <div style="display:flex; justify-content:space-between; align-items:baseline; gap:8px;">
+            <span style="font-size:13px; color:var(--text-primary); font-family:monospace;">{pattern.get("pattern") or "—"}</span>
+            <span style="font-size:12.5px; font-weight:700; color:var(--text-secondary); white-space:nowrap;">{pattern.get("count", 0)}</span>
+          </div>
+          {example_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_log_timeline_row(entry: dict) -> None:
+    st.markdown(
+        f"""
+        <div style="display:flex; gap:9px; padding:0.3rem 0; border-bottom:1px solid var(--border-subtle);">
+          <span style="color:var(--text-muted); font-size:12px; font-family:monospace; white-space:nowrap;">{entry.get("timestamp") or "—"}</span>
+          <span style="font-size:13px; color:var(--text-primary);">{entry.get("description") or ""}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_log_evidence_results(evidence_package: dict, analysis: dict) -> None:
+    log_source = evidence_package.get("log_source")
+
+    if log_source == "unavailable" or not log_source:
+        reason = (evidence_package.get("limitations") or ["Logs unavailable for this resource."])[0]
+        empty_state("Logs unavailable for this resource", reason, "🚫")
+        # Gemini was still asked to combine this with the existing RCA -
+        # show its honest summary (e.g. "analysis is based solely on the
+        # existing RCA") rather than stopping here.
+        if analysis.get("log_analysis_summary"):
+            st.markdown("<div style='height:0.6rem'></div>", unsafe_allow_html=True)
+            st.markdown(
+                f'<div style="font-size:13.5px; color:var(--text-secondary); line-height:1.5;">{analysis["log_analysis_summary"]}</div>',
+                unsafe_allow_html=True,
+            )
+        return
+
+    total_events = evidence_package.get("total_events", 0)
+    relevant_events = evidence_package.get("relevant_events", 0)
+    source_label = _LOG_ANALYSIS_LABELS.get(log_source, log_source)
+
+    st.markdown(
+        f"""
+        <div style="display:flex; gap:18px; margin-bottom:0.7rem; flex-wrap:wrap;">
+          <div><div class="ao-kpi-label">Source</div><div style="font-size:13.5px; font-weight:600;">{source_label}</div></div>
+          <div><div class="ao-kpi-label">Total Events</div><div style="font-size:13.5px; font-weight:600;">{format_number(total_events)}</div></div>
+          <div><div class="ao-kpi-label">Relevant Events</div><div style="font-size:13.5px; font-weight:600;">{format_number(relevant_events)}</div></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    limitations = evidence_package.get("limitations") or []
+    for limitation in limitations:
+        st.caption(f"ℹ️ {limitation}")
+
+    patterns = evidence_package.get("patterns") or []
+    if patterns:
+        st.markdown('<div class="ao-kpi-label" style="margin:0.5rem 0 0.2rem;">Top Patterns</div>', unsafe_allow_html=True)
+        for pattern in patterns[:5]:
+            _render_log_pattern_row(pattern)
+    elif relevant_events == 0:
+        st.markdown("<div style='height:0.3rem'></div>", unsafe_allow_html=True)
+        st.info("No relevant log evidence was found in the analyzed window.")
+
+    timeline = evidence_package.get("timeline") or []
+    if timeline:
+        st.markdown('<div class="ao-kpi-label" style="margin:0.7rem 0 0.2rem;">Timeline</div>', unsafe_allow_html=True)
+        for entry in timeline:
+            _render_log_timeline_row(entry)
+
+    st.markdown("<div style='height:0.7rem'></div>", unsafe_allow_html=True)
+    st.markdown('<div class="ao-kpi-label" style="margin-bottom:0.3rem;">AI Log Analysis</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div style="font-size:13.5px; color:var(--text-primary); line-height:1.5;">{analysis.get("log_analysis_summary") or "—"}</div>',
+        unsafe_allow_html=True,
+    )
+
+    uncertainty = analysis.get("uncertainty") or []
+    if uncertainty:
+        items = "".join(f'<div style="font-size:12px; color:var(--text-muted); padding:0.15rem 0;">⚠ {u}</div>' for u in uncertainty)
+        st.markdown(f'<div style="margin-top:0.4rem;">{items}</div>', unsafe_allow_html=True)
+
+    if analysis.get("materially_changes_rca"):
+        st.markdown("<div style='height:0.8rem'></div>", unsafe_allow_html=True)
+        updated_confidence = analysis.get("updated_confidence")
+        confidence_html = _confidence_badge(str(updated_confidence)) if updated_confidence else ""
+        st.markdown(
+            f"""
+            <div style="background:var(--amber-soft, rgba(245,158,11,0.1)); border:1px solid rgba(245,158,11,0.3);
+                        border-radius:var(--radius-sm); padding:0.9rem 1.1rem;">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.4rem;">
+                <span style="font-size:11px; font-weight:700; letter-spacing:0.05em; color:var(--text-muted);">ADDITIONAL / UPDATED RCA</span>
+                {confidence_html}
+              </div>
+              <div style="font-size:14px; color:var(--text-primary); line-height:1.5;">{analysis.get("updated_root_cause") or "—"}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+def _render_log_investigation_card(services, run_id: str, report: dict, report_key: str) -> None:
+    investigation_id = _log_investigation_id_for(run_id, report)
+
+    with card():
+        card_title("Investigate Logs", "Optional supplementary log evidence for this investigation")
+
+        if not investigation_id:
+            empty_state(
+                "Log investigation isn't available for this report",
+                "Only EC2, Load Balancer, and Auto Scaling Group resources support log investigation.",
+                "🔍",
+            )
+            return
+
+        error = st.session_state.pop(f"{_LOG_INVESTIGATION_ERROR_KEY}_{report_key}", None)
+        if error:
+            st.error(error)
+
+        try:
+            results = services.log_investigation.get_results(investigation_id)
+        except LogInvestigationActionError as exc:
+            st.info(str(exc))
+            results = {"investigated": False}
+
+        if results.get("investigated"):
+            _render_log_evidence_results(results.get("evidence_package") or {}, results.get("analysis") or {})
+            st.markdown("<div style='height:0.6rem'></div>", unsafe_allow_html=True)
+            button_label = "Re-investigate Logs"
+        else:
+            st.markdown(
+                '<div style="font-size:13px; color:var(--text-secondary); margin-bottom:0.6rem; line-height:1.5;">'
+                "Additional evidence may be available from logs. This fetches a bounded window of this "
+                "resource's real log/event source, reduces it locally, and asks Gemini whether it changes "
+                "the existing RCA - no logs are collected until you click below."
+                "</div>",
+                unsafe_allow_html=True,
+            )
+            button_label = "🔍 Investigate Logs"
+
+        submitting_key = f"log_investigation_submitting_{report_key}"
+        if st.button(button_label, key=f"log_investigation_button_{report_key}", type="primary"):
+            if not st.session_state.get(submitting_key):
+                st.session_state[submitting_key] = True
+                _handle_log_investigation(services, investigation_id, report_key, submitting_key)
+
+
+def _handle_log_investigation(services, investigation_id: str, report_key: str, submitting_key: str) -> None:
+    try:
+        with st.spinner("Fetching bounded log evidence and asking AegisOps to analyze it…"):
+            services.log_investigation.investigate(investigation_id)
+    except LogInvestigationActionError as exc:
+        st.session_state.pop(submitting_key, None)
+        st.session_state[f"{_LOG_INVESTIGATION_ERROR_KEY}_{report_key}"] = str(exc)
+        st.rerun()
+        return
+
+    st.session_state.pop(submitting_key, None)
+    st.rerun()
 
 
 # ---------------------------------------------------------------------------

@@ -58,3 +58,25 @@ def get_ce_client():
         "ce",
         region_name="us-east-1"
     )
+
+
+def get_logs_client():
+    """CloudWatch Logs - used only by the optional, user-triggered Log
+    Investigation feature (collector/logs.py) to discover/read a
+    resource's configured log groups/streams. Never used by the normal
+    metrics-only investigation pipeline."""
+    return boto3.client(
+        "logs",
+        region_name=REGION
+    )
+
+
+def get_s3_client():
+    """Used only by the optional Log Investigation feature
+    (collector/logs.py) to read ALB access logs, which AWS delivers to an
+    S3 bucket the load balancer's own attributes point to - never used by
+    the normal metrics-only investigation pipeline."""
+    return boto3.client(
+        "s3",
+        region_name=REGION
+    )

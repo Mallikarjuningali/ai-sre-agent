@@ -52,6 +52,13 @@ from api.follow_up_manager import (
     InvalidQuestionError,
     FollowUpUnavailableError,
 )
+from api.log_investigation_manager import (
+    LogInvestigationManager,
+    LogInvestigationNotFoundError,
+    LogInvestigationSupersededError,
+    LogInvestigationUnsupportedResourceError,
+    LogInvestigationUnavailableError,
+)
 from utils.dashboard_export import FEED_DIR, build_resources_json, load_current_contexts
 from utils.cost_dashboard_export import FEED_DIR as COST_FEED_DIR
 from utils.execution_cleanup import delete_executions
@@ -70,6 +77,12 @@ cost_manager = CostExplorerManager()
 # api/follow_up_manager.py's module docstring for the investigation_id
 # shape and the immutability guarantee.
 follow_up_manager = FollowUpManager()
+
+# Log Investigation - optional, explicitly user-triggered. Reads an
+# EXISTING report/context (same as Follow-Up above), never collects
+# metrics and never runs as part of a normal investigation. See
+# api/log_investigation_manager.py's module docstring.
+log_investigation_manager = LogInvestigationManager()
 
 
 class ResourceInvestigationRequest(BaseModel):
@@ -150,6 +163,44 @@ def get_follow_up_conversation(investigation_id: str):
     try:
         return follow_up_manager.get_conversation(investigation_id)
     except InvestigationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.post("/investigation/{investigation_id}/logs")
+def investigate_logs(investigation_id: str):
+    """Triggers the optional Log Investigation stage for this
+    investigation_id (same f"{run_id}__{resource_id}" shape as Follow-Up
+    above). Never collects new AWS telemetry for the normal RCA pipeline;
+    only reads the existing report/context, then fetches a bounded log
+    window on demand - see api/log_investigation_manager.py. Only ever
+    called when a user explicitly clicks "Investigate Logs"."""
+    try:
+        return log_investigation_manager.investigate(investigation_id)
+    except LogInvestigationNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except LogInvestigationSupersededError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except LogInvestigationUnsupportedResourceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except LogInvestigationUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        # A genuine AWS API failure while discovering/fetching logs -
+        # distinct from every typed condition above, and from Gemini
+        # unavailability - reported as an upstream failure, matching
+        # GET /investigation/resources' own AWS-failure mapping.
+        raise HTTPException(status_code=502, detail=f"Log investigation failed: {exc}")
+
+
+@app.get("/investigation/{investigation_id}/logs")
+def get_log_investigation_results(investigation_id: str):
+    """The persisted Log Investigation result for this investigation, or
+    {"investigated": false} if "Investigate Logs" has never been clicked
+    for it - lets the dashboard redisplay a prior result after a page
+    reload without re-running AWS/Gemini calls."""
+    try:
+        return log_investigation_manager.get_results(investigation_id)
+    except LogInvestigationNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
 

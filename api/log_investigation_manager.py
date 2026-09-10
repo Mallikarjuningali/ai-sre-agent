@@ -36,6 +36,7 @@ from typing import Any, Dict, Optional
 
 import collector.logs as log_collector
 from config.settings import REGION, LOG_MAX_ASG_MEMBER_INSTANCES_SCANNED
+from context.evidence_gap import assess_evidence_gap
 from context.log_evidence_builder import build_evidence_package, empty_evidence_package
 from llm.log_prompt_builder import LogPromptBuilder
 from llm.log_sanitizer import LogSanitizer
@@ -91,9 +92,12 @@ def _read_json(path: Path) -> Dict[str, Any]:
         return {}
 
 
-def _fetch_ec2_events(resource_id: str, window: Dict[str, Any]):
-    """Returns (raw_events, log_source, limitation_or_none)."""
-    log_source_ref = log_collector.discover_ec2_log_source(resource_id)
+def _fetch_ec2_events(resource_id: str, window: Dict[str, Any], source_hints=None):
+    """Returns (raw_events, log_source, limitation_or_none). source_hints
+    (from context/evidence_gap.py) prioritizes which discovered log group
+    to prefer when more than one matches - never changes WHETHER a source
+    is found, only WHICH one is preferred."""
+    log_source_ref = log_collector.discover_ec2_log_source(resource_id, source_hints=source_hints)
     if log_source_ref is None:
         return [], "unavailable", "Logs unavailable for this resource - no configured CloudWatch Logs stream was found for this instance."
 
@@ -118,13 +122,15 @@ def _fetch_alb_events(resource_id: str, window: Dict[str, Any]):
     return events, "alb_access_logs", None
 
 
-def _fetch_asg_events(resource_id: str, raw_context: Dict[str, Any], window: Dict[str, Any]):
+def _fetch_asg_events(resource_id: str, raw_context: Dict[str, Any], window: Dict[str, Any], source_hints=None):
     """ASG scaling activities are always a real, queryable source for any
     existing ASG (no "enabled" flag to check, unlike ALB access logs) -
     this is never reported "unavailable"; an ASG with no activity in the
     window legitimately returns zero events. Member-instance CloudWatch
     Logs are attempted additionally, bounded, and purely additive - their
-    absence never downgrades the primary asg_scaling_activities source."""
+    absence never downgrades the primary asg_scaling_activities source.
+    source_hints prioritizes each member instance's log group the same
+    way it does for a standalone EC2 investigation."""
 
     events = list(log_collector.discover_asg_scaling_activities(resource_id, window["start"], window["end"]))
 
@@ -133,7 +139,7 @@ def _fetch_asg_events(resource_id: str, raw_context: Dict[str, Any], window: Dic
         instance_id = instance.get("instance_id")
         if not instance_id:
             continue
-        log_source_ref = log_collector.discover_ec2_log_source(instance_id)
+        log_source_ref = log_collector.discover_ec2_log_source(instance_id, source_hints=source_hints)
         if log_source_ref is None:
             continue
         events.extend(
@@ -162,6 +168,7 @@ def _parse_log_response(raw_response: str) -> Dict[str, Any]:
                 "analysis for it. Please try again."
             ),
             "materially_changes_rca": False, "updated_root_cause": None, "updated_confidence": None,
+            "established_by_logs": None,
             "evidence_citations": [], "uncertainty": ["Gemini's response could not be parsed."],
             "evidence_status": fallback_status, "parsed": False,
         }
@@ -173,6 +180,7 @@ def _parse_log_response(raw_response: str) -> Dict[str, Any]:
                 "Please try again."
             ),
             "materially_changes_rca": False, "updated_root_cause": None, "updated_confidence": None,
+            "established_by_logs": None,
             "evidence_citations": [], "uncertainty": ["Gemini's response was missing a summary."],
             "evidence_status": fallback_status, "parsed": False,
         }
@@ -182,11 +190,26 @@ def _parse_log_response(raw_response: str) -> Dict[str, Any]:
         "materially_changes_rca": bool(data.get("materially_changes_rca", False)),
         "updated_root_cause": data.get("updated_root_cause"),
         "updated_confidence": data.get("updated_confidence"),
+        "established_by_logs": data.get("established_by_logs"),
         "evidence_citations": data.get("evidence_citations") or [],
         "uncertainty": data.get("uncertainty") or [],
         "evidence_status": {**fallback_status, **(data.get("evidence_status") or {})},
         "parsed": True,
     }
+
+
+def _established_by_investigation(report: Dict[str, Any]) -> str:
+    """Deterministic, code-computed echo of what the ORIGINAL metric-
+    based investigation already established - assembled verbatim from the
+    existing report (never regenerated, reinterpreted, or handed to
+    Gemini to restate) - see llm/log_prompt_builder.py's own
+    "EXISTING RCA" section, which is the prompt-side counterpart of this
+    same fact."""
+    if report.get("root_cause"):
+        return str(report["root_cause"])
+    if report.get("summary"):
+        return str(report["summary"])
+    return "The existing investigation did not record a root cause or summary."
 
 
 class LogInvestigationManager:
@@ -229,14 +252,29 @@ class LogInvestigationManager:
                 f"Log investigation is not available for resource type {resource_type!r}."
             )
 
+        # Evidence-gap assessment: purely mechanical text matching against
+        # the EXISTING RCA's own wording (see context/evidence_gap.py) -
+        # never a metric threshold, never a root-cause conclusion. Used
+        # only to (a) prioritize which discovered log source to prefer
+        # when a resource has more than one, and (b) tell Gemini WHY this
+        # log evidence was fetched. "Investigate Logs" remains a fully
+        # optional, user-triggered action regardless of gap_detected -
+        # this assessment never blocks or skips the action the user asked
+        # for, per the feature's own design (see plan/CONTRACT.md).
+        gap = assess_evidence_gap(report)
+
         window = resolve_analysis_window(raw_context)
 
         if resource_type == "EC2":
-            raw_events, log_source, unavailable_reason = _fetch_ec2_events(resource_id, window)
+            raw_events, log_source, unavailable_reason = _fetch_ec2_events(
+                resource_id, window, source_hints=gap["source_hints"]
+            )
         elif resource_type == "Load Balancer":
             raw_events, log_source, unavailable_reason = _fetch_alb_events(resource_id, window)
         else:  # "Auto Scaling Group"
-            raw_events, log_source, unavailable_reason = _fetch_asg_events(resource_id, raw_context, window)
+            raw_events, log_source, unavailable_reason = _fetch_asg_events(
+                resource_id, raw_context, window, source_hints=gap["source_hints"]
+            )
 
         window_dict = {
             "start": window["start"].isoformat(),
@@ -259,6 +297,7 @@ class LogInvestigationManager:
         prompt = LogPromptBuilder().build_prompt(
             report=report, sanitized_evidence_package=sanitized_package,
             resource_id=resource_id, resource_type=resource_type, run_id=run_id,
+            evidence_gap=gap,
         )
 
         started = time.monotonic()
@@ -273,6 +312,14 @@ class LogInvestigationManager:
         gemini_latency_seconds = time.monotonic() - started
 
         analysis = _parse_log_response(raw_response)
+        # Additive only - utils/log_investigation_store.py needs no schema
+        # change since analysis is already a free-form persisted dict.
+        # established_by_investigation is deterministic (code-computed,
+        # never Gemini-authored); evidence_gap is the same mechanical
+        # assessment already threaded into the prompt above, surfaced here
+        # too so the dashboard can show it without a second computation.
+        analysis["established_by_investigation"] = _established_by_investigation(report)
+        analysis["evidence_gap"] = gap
 
         log_investigation_store.save_result(
             investigation_id=investigation_id, run_id=run_id, resource_id=resource_id,

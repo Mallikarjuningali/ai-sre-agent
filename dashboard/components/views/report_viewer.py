@@ -471,12 +471,30 @@ def _render_log_timeline_row(entry: dict) -> None:
     )
 
 
+def _render_evidence_gap_note(analysis: dict) -> None:
+    """Additive, informational only - never gates whether logs were
+    collected (that already happened by the time this renders). Shows WHY
+    this log source was fetched, per the evidence-gap assessment computed
+    mechanically from the existing RCA's own text (see
+    context/evidence_gap.py) - not present on older, pre-evidence-gap
+    persisted results, so this renders nothing rather than guessing."""
+    gap = analysis.get("evidence_gap")
+    if not gap:
+        return
+    if gap.get("gap_detected") and gap.get("categories"):
+        categories_label = ", ".join(c.replace("_", " ") for c in gap["categories"])
+        st.caption(f"🧭 Evidence gap identified by the existing RCA: **{categories_label}** evidence prioritized")
+    else:
+        st.caption("🧭 The existing RCA did not identify a specific evidence gap - logs were gathered at your request")
+
+
 def _render_log_evidence_results(evidence_package: dict, analysis: dict) -> None:
     log_source = evidence_package.get("log_source")
 
     if log_source == "unavailable" or not log_source:
         reason = (evidence_package.get("limitations") or ["Logs unavailable for this resource."])[0]
         empty_state("Logs unavailable for this resource", reason, "🚫")
+        _render_evidence_gap_note(analysis)
         # Gemini was still asked to combine this with the existing RCA -
         # show its honest summary (e.g. "analysis is based solely on the
         # existing RCA") rather than stopping here.
@@ -503,6 +521,8 @@ def _render_log_evidence_results(evidence_package: dict, analysis: dict) -> None
         unsafe_allow_html=True,
     )
 
+    _render_evidence_gap_note(analysis)
+
     limitations = evidence_package.get("limitations") or []
     for limitation in limitations:
         st.caption(f"ℹ️ {limitation}")
@@ -528,6 +548,21 @@ def _render_log_evidence_results(evidence_package: dict, analysis: dict) -> None
         f'<div style="font-size:13.5px; color:var(--text-primary); line-height:1.5;">{analysis.get("log_analysis_summary") or "—"}</div>',
         unsafe_allow_html=True,
     )
+
+    established_by_logs = analysis.get("established_by_logs")
+    if established_by_logs:
+        st.markdown(
+            f"""
+            <div style="margin-top:0.6rem; padding:0.6rem 0.8rem; background:var(--bg-elevated);
+                        border-radius:var(--radius-sm); border:1px solid var(--border-subtle);">
+              <div style="font-size:11px; font-weight:700; letter-spacing:0.05em; color:var(--text-muted); margin-bottom:2px;">
+                WHAT THE LOGS ESTABLISH
+              </div>
+              <div style="font-size:13px; color:var(--text-primary); line-height:1.5;">{established_by_logs}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
     uncertainty = analysis.get("uncertainty") or []
     if uncertainty:

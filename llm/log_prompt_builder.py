@@ -39,7 +39,10 @@ class LogPromptBuilder:
         resource_id: str,
         resource_type: Optional[str],
         run_id: str,
+        evidence_gap: Optional[Dict[str, Any]] = None,
     ) -> str:
+
+        evidence_gap = evidence_gap or {}
 
         prompt = f"""
 You are the AegisOps SRE investigation assistant, performing a
@@ -88,6 +91,18 @@ CRITICAL RULES - follow every one of these:
    beyond what "count" in patterns actually says.
 10. Do not invent AWS resources, metrics, timestamps, deployments, or
     events that do not appear in the RCA or evidence below.
+11. The EVIDENCE GAP section below is a MECHANICAL text match against the
+    existing RCA's own wording (never a root-cause conclusion) - use it
+    only to understand WHY this particular log source was fetched. If
+    gap_detected is false, the existing RCA did not signal any specific
+    evidence gap - logs were still gathered because the user explicitly
+    requested it; do not overstate their importance in that case.
+12. analyzed_window below is the SAME incident window the original
+    metric-based investigation already established (every log event was
+    filtered to fall inside it) - temporal alignment between a log
+    pattern's first_seen/last_seen and this window is expected by
+    construction, not independent proof. Use it as supporting context for
+    correlation, never as certainty by itself.
 
 Return ONLY valid JSON. Do not include markdown. Do not wrap the JSON in
 ```.
@@ -99,6 +114,7 @@ Return this exact schema:
     "materially_changes_rca": false,
     "updated_root_cause": null,
     "updated_confidence": null,
+    "established_by_logs": "",
     "evidence_citations": [],
     "uncertainty": [],
     "evidence_status": {{
@@ -113,6 +129,13 @@ Field notes:
 - log_analysis_summary: prose summary of what the log evidence shows (or
   doesn't), combined with the existing RCA - this is what the dashboard
   shows as "AI Log Analysis".
+- established_by_logs: state specifically what the NEW log evidence
+  itself establishes (distinct from what the original metric-based
+  investigation already established, shown to you below) - if the logs
+  add nothing beyond confirming the existing RCA, say so plainly (e.g.
+  "The log evidence is consistent with the existing RCA but does not
+  establish a deeper cause"); if the evidence is insufficient to establish
+  anything further, say exactly that rather than guessing.
 - updated_root_cause / updated_confidence: ONLY populate these (both, not
   just one) when materially_changes_rca is true - this is your PROPOSED
   update, shown to the user as "Additional/Updated RCA"; it is never
@@ -131,12 +154,18 @@ Run: {run_id}
 
 EXISTING RCA (already generated from metrics/events - do not restate this
 as if it were new information; use it as context to interpret the log
-evidence below)
+evidence below. This is the ONLY metric/event information you receive -
+the original metric dataset itself is deliberately not repeated here.)
 Severity: {report.get("severity", "unknown")}
 Confidence: {report.get("confidence", "unknown")}
 Summary: {report.get("summary", "")}
 Root cause: {report.get("root_cause", "")}
 Evidence: {json.dumps(report.get("evidence") or [], separators=(",", ":"))}
+
+EVIDENCE GAP (mechanically derived from the RCA text above - see rule 11)
+gap_detected: {json.dumps(evidence_gap.get("gap_detected", False))}
+categories: {json.dumps(evidence_gap.get("categories") or [])}
+matched_signals: {json.dumps(evidence_gap.get("signals") or [])}
 
 LOG EVIDENCE PACKAGE (already sanitized - IP addresses/hostnames/URLs/
 credentials/tokens have been redacted; every remaining timestamp, status

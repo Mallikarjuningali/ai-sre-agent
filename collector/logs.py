@@ -61,11 +61,27 @@ elbv2_client = get_elbv2_client()
 # LOG_MAX_GROUPS_SCANNED log groups so an account with many unrelated log
 # groups can't turn one investigation into an unbounded account-wide scan.
 
-def discover_ec2_log_source(instance_id):
-    """Returns {"log_group": ..., "log_stream": ...} for the first log
-    group (within the scanned bound) that has a log stream named after
-    this instance ID, or None if none was found within that bound - a
-    real "not configured/not discoverable" result, never guessed."""
+def discover_ec2_log_source(instance_id, source_hints=None):
+    """Returns {"log_group": ..., "log_stream": ...} for a log group
+    (within the scanned bound) that has a log stream named after this
+    instance ID, or None if none was found within that bound - a real
+    "not configured/not discoverable" result, never guessed.
+
+    source_hints (optional, e.g. ["nginx","apache"] from
+    context/evidence_gap.py) prioritizes which matching log group to
+    prefer when a resource has more than one - e.g. an instance shipping
+    both an nginx-tagged group and a generic application group. Without
+    hints (the default), behavior is IDENTICAL to before this parameter
+    existed: the first matching log group found is returned immediately.
+    With hints, scanning continues (still bounded by
+    LOG_MAX_GROUPS_SCANNED) until a log group whose name contains a hint
+    token is found, falling back to the first match seen if no hint ever
+    matches - this never changes WHICH events are relevant, only WHICH
+    real, already-discovered source is preferred when more than one
+    exists."""
+
+    hints = [h.lower() for h in (source_hints or [])]
+    first_match = None
 
     try:
         groups_scanned = 0
@@ -80,7 +96,7 @@ def discover_ec2_log_source(instance_id):
                         f"EC2 log discovery for {instance_id} stopped after "
                         f"{LOG_MAX_GROUPS_SCANNED} log groups scanned (bounded)."
                     )
-                    return None
+                    return first_match
 
                 groups_scanned += 1
                 log_group_name = group.get("logGroupName")
@@ -99,10 +115,21 @@ def discover_ec2_log_source(instance_id):
                     continue
 
                 streams = streams_response.get("logStreams") or []
-                if streams:
-                    return {"log_group": log_group_name, "log_stream": streams[0]["logStreamName"]}
+                if not streams:
+                    continue
 
-        return None
+                candidate = {"log_group": log_group_name, "log_stream": streams[0]["logStreamName"]}
+
+                if not hints:
+                    return candidate
+
+                if first_match is None:
+                    first_match = candidate
+
+                if any(hint in log_group_name.lower() for hint in hints):
+                    return candidate
+
+        return first_match
 
     except (BotoCoreError, ClientError) as exc:
         logger.error(f"EC2 log source discovery failed for {instance_id}: {exc}")

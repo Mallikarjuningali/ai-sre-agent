@@ -15,7 +15,24 @@ fastapi==0.115.6
 uvicorn==0.34.0
 
 # Dashboard
-streamlit
+# streamlit is pinned (not left floating) and MUST match dashboard/requirements.txt
+# exactly. Streamlit ships its compiled frontend JS bundle inside the
+# `streamlit` package itself, with content-hashed chunk filenames
+# (e.g. static/js/DateInput.<hash>.js) that differ between versions. If
+# this file and dashboard/requirements.txt ever specify different
+# versions, whichever gets installed last silently wins in a shared
+# environment - a browser tab that loaded index.html against one
+# version's hashed bundle then gets served a DIFFERENT version's static
+# folder by the now-mismatched running server, and its next dynamic
+# import() for an old chunk hash 404s with exactly
+# "Failed to fetch dynamically imported module: .../DateInput....js".
+# Confirmed as the real, reproducible cause here: this file previously
+# left streamlit unpinned (floating to whatever was newest at install
+# time - resolved to 1.50.0 in this environment) while
+# dashboard/requirements.txt pinned 1.60.0 - two disagreeing sources of
+# truth for the same package in the same repo. Keep both files in sync
+# on every future Streamlit version bump.
+streamlit==1.60.0
 plotly
 pandas
 

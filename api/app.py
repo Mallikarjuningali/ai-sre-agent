@@ -319,36 +319,47 @@ def get_resources_feed():
 
 # -----------------------------------------------------------------------
 # Cost Explorer - completely separate pipeline/feed from everything above.
-# POST /cost-explorer/refresh triggers a fresh boto3 Cost Explorer query
-# (collector -> CostAnalyzer -> cost_dashboard_export), synchronously -
-# these calls return in low single digit seconds, so no run_id/polling
-# machinery is used here, unlike /investigation/full. The GET/HEAD routes
-# below are pure passthroughs of output/cost/dashboard_feed/*.json,
-# exactly like the infra feed routes above are for output/dashboard_feed/.
+# POST /cost-explorer/refresh starts a fresh boto3 Cost Explorer query
+# (collector -> CostAnalyzer -> cost_dashboard_export) in a background
+# thread and returns {run_id, status, started_at} immediately -
+# GET /cost-explorer/status/{run_id} polls its progress, mirroring
+# /investigation/full + /investigation/status/{run_id} exactly. The other
+# GET/HEAD routes below are pure passthroughs of
+# output/cost/dashboard_feed/*.json, exactly like the infra feed routes
+# above are for output/dashboard_feed/.
 # -----------------------------------------------------------------------
 
 class CostRefreshRequest(BaseModel):
-    # Both optional, and only meaningful together: the user-selected
-    # Month/Period Comparison range from the dashboard's date pickers.
-    # Omitted entirely (or an empty {} body, which is what every existing
-    # caller already sends) -> the refresh behaves exactly as it did
-    # before this feature existed, so no existing caller breaks.
+    # All optional. from_date/to_date are only meaningful together: the
+    # user-selected Month/Period Comparison range from the dashboard's
+    # date pickers. tag_key (independent of from_date/to_date) requests a
+    # tag-based cost allocation breakdown for ANY real AWS Cost
+    # Allocation Tag - never hardcoded to one business tag. Omitted
+    # entirely (or an empty {} body, which is what every existing caller
+    # already sends) -> the refresh behaves exactly as it did before
+    # these features existed, so no existing caller breaks.
     from_date: Optional[str] = None
     to_date: Optional[str] = None
+    tag_key: Optional[str] = None
 
 
 @app.post("/cost-explorer/refresh")
 def refresh_cost_explorer(payload: Optional[CostRefreshRequest] = None):
     from_date = payload.from_date if payload else None
     to_date = payload.to_date if payload else None
+    tag_key = payload.tag_key if payload else None
     try:
-        return cost_manager.refresh(from_date=from_date, to_date=to_date)
+        return cost_manager.start_refresh(from_date=from_date, to_date=to_date, tag_key=tag_key)
     except CostExplorerBusyError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Cost Explorer refresh failed: {exc}")
+
+
+@app.get("/cost-explorer/status/{run_id}")
+def get_cost_explorer_status(run_id: str):
+    status = cost_manager.get_status(run_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail="Unknown run_id")
+    return status
 
 
 def _read_cost_feed_file(filename: str):
@@ -393,6 +404,16 @@ def head_cost_anomalies_feed():
     return Response(status_code=_cost_feed_exists_status("anomalies.json"), media_type="application/json")
 
 
+@app.head("/cost-explorer/tags")
+def head_cost_tags_feed():
+    return Response(status_code=_cost_feed_exists_status("tags.json"), media_type="application/json")
+
+
+@app.head("/cost-explorer/forecast")
+def head_cost_forecast_feed():
+    return Response(status_code=_cost_feed_exists_status("forecast.json"), media_type="application/json")
+
+
 @app.head("/cost-explorer/comparison")
 def head_cost_comparison_feed():
     return Response(status_code=_cost_feed_exists_status("comparison.json"), media_type="application/json")
@@ -431,6 +452,22 @@ def get_cost_regions_feed():
 @app.get("/cost-explorer/anomalies")
 def get_cost_anomalies_feed():
     return _read_cost_feed_file("anomalies.json")
+
+
+@app.get("/cost-explorer/tags")
+def get_cost_tags_feed():
+    # May legitimately be `null` (valid JSON) when no tag key has been
+    # requested yet - _read_cost_feed_file() only 404s when the file
+    # itself is missing, not when its content is null.
+    return _read_cost_feed_file("tags.json")
+
+
+@app.get("/cost-explorer/forecast")
+def get_cost_forecast_feed():
+    # May legitimately be `null` when no refresh has ever run with
+    # forecasting enabled (see collector/cost_explorer.py's
+    # get_cost_forecast()) - same null-vs-missing convention as tags/comparison.
+    return _read_cost_feed_file("forecast.json")
 
 
 @app.get("/cost-explorer/comparison")

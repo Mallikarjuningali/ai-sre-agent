@@ -30,13 +30,26 @@ class CostAnalyzer:
         self.llm = LLMEngine()
         self.report = CostReportWriter()
 
-    def run(self) -> dict:
+    def run(self, on_progress=None) -> dict:
+        """on_progress (optional): called with a single phase-key string
+        ("BUILDING_CONTEXT", "RUNNING_AI_ANALYSIS", "PERSISTING_REPORT")
+        at the real boundary between this method's own stages - used by
+        api/cost_explorer_manager.py's async refresh to report genuine
+        pipeline-stage progress, mirroring analyzer/analyzer.py's own
+        on_progress convention for the infra pipeline. Omitted (the
+        default): behaves exactly as before this feature existed."""
+
+        if on_progress:
+            on_progress("BUILDING_CONTEXT")
 
         logger.info("Building cost context...")
 
         context = self.builder.run()
 
         prompt = self.prompt.build_prompt(context)
+
+        if on_progress:
+            on_progress("RUNNING_AI_ANALYSIS")
 
         logger.info("Requesting Gemini cost analysis...")
 
@@ -46,6 +59,9 @@ class CostAnalyzer:
             report = json.loads(response)
         except Exception:
             report = {"raw_response": response}
+
+        if on_progress:
+            on_progress("PERSISTING_REPORT")
 
         self.report.save(report)
 

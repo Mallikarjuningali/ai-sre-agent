@@ -503,6 +503,276 @@ def _grouped_cost(start_date, end_date, dimension_key, label_key, record_type=No
 
 
 # =========================================================
+# Tag-based cost allocation - dynamically supports ANY requested AWS
+# Cost Allocation Tag key (Environment, Team, Project, Application, ...),
+# never a hardcoded business tag. Real AWS API only (GetCostAndUsage's
+# GroupBy TAG capability, the same documented mechanism SERVICE/REGION
+# breakdowns above already use, plus ListCostAllocationTags to honestly
+# tell "not activated for billing" apart from "genuinely zero cost" -
+# GetCostAndUsage's own GroupBy TAG response cannot make that
+# distinction on its own, since an unactivated tag simply returns no
+# groups, identical in shape to a real empty result.
+# =========================================================
+
+def get_tag_activation_status(tag_key):
+    """Real AWS status for one Cost Allocation Tag key via
+    ce:ListCostAllocationTags. Returns (status, error) where status is
+    one of "active" | "inactive" | "not_found", or (None, reason) if the
+    API call itself failed. Never inferred from GetCostAndUsage's own
+    response shape - that response looks identical for "not activated"
+    and "genuinely zero cost", so this is the one real AWS answer that
+    can honestly tell them apart."""
+
+    try:
+        response = ce.list_cost_allocation_tags(TagKeys=[tag_key])
+        tags = response.get("CostAllocationTags") or []
+
+        if not tags:
+            return "not_found", None
+
+        status = (tags[0].get("Status") or "").lower()
+
+        return ("active" if status == "active" else "inactive"), None
+
+    except Exception as exc:
+
+        logger.error(f"list_cost_allocation_tags failed for tag_key={tag_key!r}: {exc}")
+
+        return None, str(exc)
+
+
+def get_tag_breakdown(start_date, end_date, tag_key):
+    """Real AWS cost grouped by ONE Cost Allocation Tag's values, for
+    whatever tag_key is requested (never a hardcoded business tag).
+
+    Returns {tag_key, status, reason, breakdown, untagged_cost, currency}
+    where status is exactly one of:
+      "available"     - the tag is an active cost allocation tag AND real
+                         per-value cost data was found; `breakdown` is
+                         [{"tag_value": ..., "cost": ..., "currency": ...}, ...].
+      "empty"          - the tag is active, but no cost was found grouped
+                         by it for this period (a valid, honest zero
+                         result - never fabricated).
+      "not_activated"  - the tag key exists in this account's billing
+                         data but has not been activated as a Cost
+                         Allocation Tag (AWS Billing > Cost Allocation
+                         Tags) - no cost data can be attributed to it
+                         until it is.
+      "unsupported"    - the tag key does not exist as a Cost Allocation
+                         Tag for this account at all.
+      "failed"         - a genuine AWS API/permission error occurred;
+                         `reason` carries AWS's own error text.
+
+    untagged_cost isolates AWS's own "no value for this tag" group
+    (GetCostAndUsage represents this as a "<tag_key>$" key with an empty
+    value after the "$") - resources billed but not carrying this
+    specific tag, kept as its own honest figure rather than being
+    silently folded into the named breakdown or dropped."""
+
+    empty_result = {"tag_key": tag_key, "status": None, "reason": None,
+                     "breakdown": [], "untagged_cost": None, "currency": None}
+
+    if not tag_key:
+        return {**empty_result, "status": "unsupported", "reason": "No tag key was requested."}
+
+    activation_status, activation_error = get_tag_activation_status(tag_key)
+
+    if activation_status is None:
+        return {**empty_result, "status": "failed",
+                "reason": f"Could not verify Cost Allocation Tag activation status: {activation_error}"}
+
+    if activation_status == "not_found":
+        return {**empty_result, "status": "unsupported",
+                "reason": f'"{tag_key}" is not a recognized AWS Cost Allocation Tag for this account.'}
+
+    if activation_status == "inactive":
+        return {**empty_result, "status": "not_activated",
+                "reason": (
+                    f'"{tag_key}" exists but is not activated for cost allocation. '
+                    "Activate it under AWS Billing > Cost Allocation Tags to see cost data grouped by it."
+                )}
+
+    try:
+        totals = {}
+        untagged_cost = None
+        currency = None
+        next_page_token = None
+
+        while True:
+
+            request_kwargs = {
+                "TimePeriod": {"Start": _iso_date(start_date), "End": _iso_date(end_date)},
+                "Granularity": "MONTHLY",
+                "Metrics": ["UnblendedCost"],
+                "GroupBy": [{"Type": "TAG", "Key": tag_key}],
+            }
+
+            if next_page_token:
+                request_kwargs["NextPageToken"] = next_page_token
+
+            response = ce.get_cost_and_usage(**request_kwargs)
+
+            results = response.get("ResultsByTime") or []
+
+            for result in results:
+
+                for group in result.get("Groups") or []:
+
+                    keys = group.get("Keys") or []
+
+                    if not keys:
+                        continue
+
+                    # AWS's real GroupBy TAG key shape is "TagKey$TagValue" -
+                    # an empty value after "$" is AWS's own representation
+                    # of "no value for this tag" on the underlying
+                    # resource, never an estimate made here.
+                    _, _, tag_value = keys[0].partition("$")
+
+                    metrics = group.get("Metrics") or {}
+                    cost = metrics.get("UnblendedCost") or {}
+                    amount = cost.get("Amount")
+
+                    if amount is None:
+                        continue
+
+                    currency = cost.get("Unit") or currency
+
+                    if tag_value == "":
+                        untagged_cost = (untagged_cost or 0.0) + float(amount)
+                    else:
+                        totals[tag_value] = totals.get(tag_value, 0.0) + float(amount)
+
+            next_page_token = response.get("NextPageToken")
+
+            if not next_page_token:
+                break
+
+        breakdown = [
+            {"tag_value": name, "cost": round(amount, 2), "currency": currency}
+            for name, amount in totals.items()
+        ]
+        breakdown.sort(key=lambda item: abs(item["cost"]), reverse=True)
+
+        untagged_cost = round(untagged_cost, 2) if untagged_cost is not None else None
+        # "is not None", never truthiness - a real untagged bucket that
+        # happens to net to exactly 0.0 is still a genuine AWS group
+        # (must be "available"), not the same as no group being returned
+        # at all (which is "empty").
+        status = "available" if (breakdown or untagged_cost is not None) else "empty"
+        reason = None if status == "available" else f'No cost data was found grouped by "{tag_key}" for this period.'
+
+        return {
+            "tag_key": tag_key, "status": status, "reason": reason,
+            "breakdown": breakdown, "untagged_cost": untagged_cost, "currency": currency,
+        }
+
+    except Exception as exc:
+
+        logger.error(f"get_tag_breakdown(tag_key={tag_key!r}) failed: {exc}")
+
+        return {**empty_result, "status": "failed", "reason": str(exc)}
+
+
+# =========================================================
+# Cost forecasting - AWS's own GetCostForecast, never a locally-computed
+# projection. Forecasts the remainder of the current calendar month
+# (today through the first of next month, exclusive - the same
+# exclusive-End convention every other date range in this module already
+# uses) - a real, commonly-useful default that needs no new date-picker
+# UI, distinct from the existing look-BACK windows everywhere else in
+# this file.
+# =========================================================
+
+def _forecast_period_bounds():
+    today = datetime.now(UTC).date()
+
+    if today.month == 12:
+        next_month_first = date(today.year + 1, 1, 1)
+    else:
+        next_month_first = date(today.year, today.month + 1, 1)
+
+    return today, next_month_first
+
+
+def get_cost_forecast(start_date, end_date, granularity="MONTHLY"):
+    """Real AWS cost forecast for [start_date, end_date) via
+    GetCostForecast - AWS computes the projection; nothing here
+    calculates or estimates a forecast number itself.
+
+    Returns {status, reason, forecast_amount, currency, period,
+    prediction_interval_lower, prediction_interval_upper} where status is
+    exactly one of:
+      "available"          - AWS returned a real forecast total.
+      "insufficient_data"  - AWS could not forecast because this account
+                              doesn't yet have enough historical cost data.
+      "unsupported_period"  - AWS rejected the requested period (e.g. it
+                              isn't entirely in the future, which
+                              GetCostForecast requires).
+      "unavailable"         - a genuine AWS API/permission error, or an
+                              empty response with no forecast total.
+
+    prediction_interval_lower/upper are AWS's own PredictionIntervalLevel
+    bounds (only present when the forecast spans exactly one result
+    period) - never fabricated when AWS didn't return them."""
+
+    # "from"/"to" (not "start"/"end") - matches the same period-dict key
+    # convention every other period in this module uses (get_period_data,
+    # _comparison_period, etc.) so the dashboard's shared
+    # _format_period_range() helper works on this period unmodified.
+    empty_result = {"status": None, "reason": None, "forecast_amount": None, "currency": None,
+                     "period": {"from": _iso_date(start_date), "to": _iso_date(end_date - timedelta(days=1))},
+                     "prediction_interval_lower": None, "prediction_interval_upper": None}
+
+    try:
+        response = ce.get_cost_forecast(
+            TimePeriod={"Start": _iso_date(start_date), "End": _iso_date(end_date)},
+            Metric="UNBLENDED_COST",
+            Granularity=granularity,
+            PredictionIntervalLevel=80,
+        )
+
+        total = response.get("Total") or {}
+        amount = total.get("Amount")
+
+        if amount is None:
+            return {**empty_result, "status": "unavailable", "reason": "AWS returned no forecast total for this period."}
+
+        results = response.get("ForecastResultsByTime") or []
+        lower = upper = None
+
+        if len(results) == 1:
+            lower_raw = results[0].get("PredictionIntervalLowerBound")
+            upper_raw = results[0].get("PredictionIntervalUpperBound")
+            lower = round(float(lower_raw), 2) if lower_raw is not None else None
+            upper = round(float(upper_raw), 2) if upper_raw is not None else None
+
+        return {
+            **empty_result, "status": "available",
+            "forecast_amount": round(float(amount), 2), "currency": total.get("Unit"),
+            "prediction_interval_lower": lower, "prediction_interval_upper": upper,
+        }
+
+    except Exception as exc:
+
+        code = _error_code(exc)
+        message = str(exc)
+        lowered = message.lower()
+
+        if code == "DataUnavailableException" or "historical data" in lowered or "insufficient" in lowered:
+            logger.info(f"Cost forecast unavailable - insufficient historical data: {message}")
+            return {**empty_result, "status": "insufficient_data", "reason": message}
+
+        if code == "ValidationException":
+            logger.warning(f"Cost forecast rejected the requested period: {message}")
+            return {**empty_result, "status": "unsupported_period", "reason": message}
+
+        logger.error(f"get_cost_forecast failed: {exc}")
+
+        return {**empty_result, "status": "unavailable", "reason": message}
+
+
+# =========================================================
 # Full period data bundle - the single per-period fetch used for the
 # always-computed current/previous periods AND the optional
 # user-selected Month/Period Comparison. Reuses every per-metric
@@ -824,7 +1094,7 @@ def get_anomalies(start_date, end_date):
 # Main
 # =========================================================
 
-def main(from_date=None, to_date=None):
+def main(from_date=None, to_date=None, tag_key=None, on_progress=None):
     """from_date/to_date (optional "YYYY-MM-DD" strings, both required
     together) are the user-selected Month/Period Comparison range from
     the dashboard's date pickers - entirely dynamic, never a hardcoded
@@ -840,14 +1110,39 @@ def main(from_date=None, to_date=None):
     credits) - not just a single total each, as before - so the context
     builder can derive gross/credits/net at the service and region level
     for both periods, and so "Change" columns in the redesigned Cost
-    Explorer page have real previous-period data to compare against."""
+    Explorer page have real previous-period data to compare against.
+
+    tag_key (optional, e.g. "Environment"/"Team"/"Project"/"Application" -
+    any real AWS Cost Allocation Tag key, dynamically requested, never
+    hardcoded to one business tag): when supplied, a "tag_breakdown"
+    block is added via get_tag_breakdown() for the current period only.
+    Omitted (the default): no tag-related AWS calls are made at all.
+
+    A "forecast" block (real AWS GetCostForecast projection for the
+    remainder of the current calendar month) is always computed - see
+    get_cost_forecast()/_forecast_period_bounds() - no opt-in needed
+    since it takes no user-selected input.
+
+    on_progress (optional): called with a single phase-key string
+    ("COLLECTING_COST_DATA", "COLLECTING_ANOMALY_DATA") at the real
+    boundary between this function's AWS call groups - used by
+    api/cost_explorer_manager.py's async refresh to report genuine
+    pipeline-stage progress, never a synthetic/faked percentage. Omitted
+    (the default): behaves exactly as before this feature existed - no
+    caller is required to pass it."""
 
     logger.info("Starting Cost Explorer Collector...")
+
+    if on_progress:
+        on_progress("COLLECTING_COST_DATA")
 
     bounds = _period_bounds()
 
     current = get_period_data(bounds["current_start"], bounds["current_end"])
     previous = get_period_data(bounds["previous_start"], bounds["previous_end"])
+
+    if on_progress:
+        on_progress("COLLECTING_ANOMALY_DATA")
 
     # GetAnomalies' DateInterval.EndDate has a different constraint than
     # GetCostAndUsage's exclusive End: AWS caps it at the "latest
@@ -859,6 +1154,13 @@ def main(from_date=None, to_date=None):
     anomaly_end_date = bounds["current_end"] - timedelta(days=1)
 
     anomalies = get_anomalies(bounds["current_start"], anomaly_end_date)
+
+    tag_breakdown = None
+    if tag_key:
+        tag_breakdown = get_tag_breakdown(bounds["current_start"], bounds["current_end"], tag_key)
+
+    forecast_start, forecast_end = _forecast_period_bounds()
+    forecast = get_cost_forecast(forecast_start, forecast_end)
 
     comparison = None
 
@@ -914,6 +1216,10 @@ def main(from_date=None, to_date=None):
         "previous_period": previous,
 
         "anomalies": anomalies,
+
+        "tag_breakdown": tag_breakdown,
+
+        "forecast": forecast,
 
         "comparison": comparison,
 

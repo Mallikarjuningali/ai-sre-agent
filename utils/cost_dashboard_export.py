@@ -9,11 +9,12 @@ Purpose:
     output/cost/context/ and output/cost/reports/, writes only
     output/cost/dashboard_feed/.
 
-    Eight feed files, one per dashboard concern, mirroring the existing
+    Ten feed files, one per dashboard concern, mirroring the existing
     infra dashboard's "one JSON file per concern" convention. All built
     from context/cost_context_builder.py's current_period/previous_period/
-    change/service_comparison/region_comparison/anomalies/comparison
-    shape - see that module's docstring for the full data model.
+    change/service_comparison/region_comparison/anomalies/tag_allocation/
+    forecast/comparison shape - see that module's docstring for the full
+    data model.
 
         summary.json    - current_period (gross/credits/net), previous_period,
                            change, currency, period, generated_at
@@ -30,6 +31,14 @@ Purpose:
         regions.json    - same as services.json, grouped by region
         anomalies.json  - AWS Cost Anomaly Detection findings/status for
                            the current period
+        tags.json       - the user-requested tag-based cost allocation
+                           (tag_key/status/reason/breakdown/untagged_cost),
+                           or null when no tag key has been requested yet
+        forecast.json   - AWS's own GetCostForecast projection for the
+                           remainder of the current calendar month
+                           (status/reason/forecast_amount/period/
+                           prediction interval), always present once a
+                           refresh has run under this feature
         comparison.json - the user-selected Month/Period Comparison
                            (selected_period/comparison_period/difference/
                            percentage_change/service_comparison/
@@ -178,6 +187,22 @@ def build_anomalies(context: dict) -> dict:
     }
 
 
+def build_forecast(context: dict):
+    """None only when the published context predates this feature - a
+    genuine forecast attempt (even a failed one) always carries a real
+    status once this feature is live, never silently omitted."""
+    return context.get("forecast")
+
+
+def build_tags(context: dict):
+    """None when no tag key has been requested yet - a valid, honest
+    "not run" state (mirrors build_comparison's own None convention),
+    never a fabricated allocation. See
+    context/cost_context_builder.py::_build_tag_allocation for the real
+    AWS-derived shape when a tag key WAS requested."""
+    return context.get("tag_allocation")
+
+
 def build_comparison(context: dict):
     """None when no Month/Period Comparison has been requested yet - a
     valid, honest "not run" state (see the dashboard's empty_state for
@@ -202,6 +227,8 @@ def export() -> None:
     atomic_write_json(FEED_DIR / "services.json", build_services(context))
     atomic_write_json(FEED_DIR / "regions.json", build_regions(context))
     atomic_write_json(FEED_DIR / "anomalies.json", build_anomalies(context))
+    atomic_write_json(FEED_DIR / "tags.json", build_tags(context))
+    atomic_write_json(FEED_DIR / "forecast.json", build_forecast(context))
     atomic_write_json(FEED_DIR / "comparison.json", build_comparison(context))
     atomic_write_json(FEED_DIR / "report.json", build_report(report))
 

@@ -389,6 +389,51 @@ class CostContextBuilder:
 
         }
 
+    @staticmethod
+    def _build_tag_allocation(tag_raw: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Passes collector/cost_explorer.py::get_tag_breakdown()'s own
+        real AWS result straight through - unlike service/region
+        breakdowns, tag allocation has no gross/credits derivation to
+        apply here (AWS's GroupBy TAG data is net-only; combining it with
+        a RECORD_TYPE=Credit filter is not requested by this feature).
+        None when no tag key was requested this refresh - a valid,
+        honest "not run" state, distinct from status="empty"/"failed"."""
+
+        if not tag_raw:
+            return None
+
+        return {
+            "tag_key": tag_raw.get("tag_key"),
+            "status": tag_raw.get("status"),
+            "reason": tag_raw.get("reason"),
+            "breakdown": tag_raw.get("breakdown") or [],
+            "untagged_cost": tag_raw.get("untagged_cost"),
+            "currency": tag_raw.get("currency"),
+        }
+
+    @staticmethod
+    def _build_forecast(forecast_raw: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Passes collector/cost_explorer.py::get_cost_forecast()'s own
+        real AWS projection straight through - no arithmetic performed
+        here, matching the explicit requirement that only AWS's own
+        forecast number is ever shown, never a locally-computed one.
+        None only when the raw collector output predates this feature
+        (no "forecast" key at all) - a genuine forecast attempt (even a
+        failed one) always has a real status, never silently omitted."""
+
+        if forecast_raw is None:
+            return None
+
+        return {
+            "status": forecast_raw.get("status"),
+            "reason": forecast_raw.get("reason"),
+            "forecast_amount": forecast_raw.get("forecast_amount"),
+            "currency": forecast_raw.get("currency"),
+            "period": forecast_raw.get("period") or {},
+            "prediction_interval_lower": forecast_raw.get("prediction_interval_lower"),
+            "prediction_interval_upper": forecast_raw.get("prediction_interval_upper"),
+        }
+
     def build_context(self, raw: Dict[str, Any]) -> Dict[str, Any]:
 
         current_period = self._build_period(raw.get("current_period") or {})
@@ -422,6 +467,10 @@ class CostContextBuilder:
             ),
 
             "anomalies": raw.get("anomalies") or dict(self._EMPTY_ANOMALIES),
+
+            "tag_allocation": self._build_tag_allocation(raw.get("tag_breakdown")),
+
+            "forecast": self._build_forecast(raw.get("forecast")),
 
             "comparison": self._build_comparison(raw.get("comparison")),
 

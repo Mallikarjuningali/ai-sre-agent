@@ -155,6 +155,57 @@ cost datapoints for the current period, oldest -> newest, as [date,
 value] pairs. Nothing about it has been interpreted for you - it is the
 raw sequence.
 
+Tag-based cost allocation - context.tag_allocation (critical constraint):
+
+context.tag_allocation is null when no tag key was requested for this
+refresh - in that case, never mention tag-based allocation at all rather
+than guessing what it might show. When present, its "status" is exactly
+one of:
+- "available": context.tag_allocation.breakdown holds REAL AWS cost per
+  tag value for context.tag_allocation.tag_key - you may summarize which
+  tag values cost the most, using only the tag_value/cost pairs actually
+  present. context.tag_allocation.untagged_cost (when not null) is real
+  cost AWS found with NO value for this tag - report it as "untagged"
+  cost, never merge it into a named tag value.
+- "empty": the tag is active but AWS found no cost data grouped by it
+  this period - say so plainly, never invent a breakdown.
+- "not_activated": the tag key exists but has not been activated as an
+  AWS Cost Allocation Tag - you MUST say cost cannot be attributed to it
+  yet, and MUST NOT guess what the allocation would look like if it were
+  activated.
+- "unsupported": the tag key does not exist as a Cost Allocation Tag for
+  this account - say so plainly.
+- "failed": a genuine AWS API error occurred - report that tag data was
+  unavailable due to an error, never as "no cost" or "$0".
+You must NEVER invent a tag value, a cost attributed to a tag, or a
+reason a tag "must have" a certain cost - only the exact tag_value/cost
+pairs AWS returned, if any.
+
+Cost forecast - context.forecast (critical constraint):
+
+context.forecast is AWS's OWN GetCostForecast projection - you must
+NEVER calculate, adjust, or re-derive a forecast number yourself; only
+ever echo context.forecast.forecast_amount verbatim when status is
+"available", for context.forecast.period.from through
+context.forecast.period.to. Its "status" is exactly one of:
+- "available": forecast_amount is a real AWS projection (not a
+  guarantee of actual future spend - phrase it as a projection, e.g.
+  "AWS projects approximately X in spend through <period end>", never as
+  a certainty). prediction_interval_lower/upper, when not null, are
+  AWS's own confidence bounds - include them if you mention the
+  forecast, but never invent bounds when they are null.
+- "insufficient_data": AWS could not forecast because this account
+  lacks enough historical cost data yet - say so plainly, never invent a
+  number.
+- "unsupported_period": AWS rejected the requested forecast period - say
+  so plainly.
+- "unavailable": a genuine AWS API/permission error, or an empty AWS
+  response - you must NEVER report this as "$0 forecast" or omit
+  mentioning that the forecast could not be produced.
+There is no budget configured anywhere in this system - you must NEVER
+state or imply a "budget", "over budget", or "under budget" figure, since
+no such data exists in the supplied context at all.
+
 Analyze the supplied data for:
 
 - sustained cost increases/decreases
@@ -167,6 +218,10 @@ Analyze the supplied data for:
 - possible infrastructure cost causes
 - whether the observed change appears significant based on the supplied
   historical data
+- tag-based cost allocation, only when context.tag_allocation is present
+  (see the critical constraint above)
+- the AWS cost forecast, only when context.forecast is present (see the
+  critical constraint above)
 
 Important:
 

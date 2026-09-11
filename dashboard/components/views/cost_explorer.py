@@ -36,7 +36,9 @@ displays values the backend already derived.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+import html
+import time
+from datetime import date, datetime, timedelta, timezone
 
 import streamlit as st
 
@@ -44,7 +46,8 @@ from services import CostExplorerActionError, invalidate
 
 from ..cards import card, card_title, empty_state, kpi_card
 from ..charts import horizontal_bar, multi_line_trend
-from ..formatting import time_ago
+from ..formatting import format_duration, parse_dt, time_ago
+from ..icons import svg_icon
 from ..tables import render_table
 from ..topbar import page_header
 
@@ -52,6 +55,21 @@ _REFRESH_ERROR_KEY = "cost_explorer_refresh_error"
 _DATE_RANGE_ERROR_KEY = "cost_explorer_date_range_error"
 _FROM_DATE_KEY = "cost_explorer_from_date"
 _TO_DATE_KEY = "cost_explorer_to_date"
+_TAG_KEY_INPUT_KEY = "cost_explorer_tag_key_input"
+
+# Async refresh run state (Phase 2) - mirrors
+# components/investigation_launcher.py's own _SESSION_KEY pattern exactly,
+# one independent session key so a Cost Explorer refresh in flight never
+# interacts with an Investigation run in flight.
+_REFRESH_RUN_KEY = "cost_explorer_refresh_run"
+_TERMINAL_STATES = {"COMPLETED", "FAILED"}
+_DEFAULT_REFRESH_PHASES = [
+    {"key": "COLLECTING_COST_DATA", "label": "Collecting AWS cost data"},
+    {"key": "COLLECTING_ANOMALY_DATA", "label": "Collecting anomaly data"},
+    {"key": "BUILDING_CONTEXT", "label": "Building cost context"},
+    {"key": "RUNNING_AI_ANALYSIS", "label": "Running AI analysis"},
+    {"key": "PERSISTING_REPORT", "label": "Persisting report"},
+]
 
 _SHOW_ALL_OVERVIEW_SERVICES_KEY = "cost_explorer_show_all_overview_services"
 _SHOW_ALL_OVERVIEW_REGIONS_KEY = "cost_explorer_show_all_overview_regions"
@@ -243,6 +261,8 @@ def _default_to_date() -> date:
 
 
 def _render_shared_controls(services, summary: dict) -> None:
+    active_run = st.session_state.get(_REFRESH_RUN_KEY)
+
     with card():
         col_meta, col_from, col_to, col_refresh = st.columns([2, 1.3, 1.3, 1])
 
@@ -259,19 +279,46 @@ def _render_shared_controls(services, summary: dict) -> None:
                 st.caption("No cost data yet — click Refresh to run a Cost Explorer query.")
 
         with col_from:
-            st.date_input("From", value=_default_from_date(), key=_FROM_DATE_KEY)
+            st.date_input("From", value=_default_from_date(), key=_FROM_DATE_KEY, disabled=bool(active_run))
         with col_to:
-            st.date_input("To", value=_default_to_date(), key=_TO_DATE_KEY)
+            st.date_input("To", value=_default_to_date(), key=_TO_DATE_KEY, disabled=bool(active_run))
         with col_refresh:
             st.markdown("<div style='height:1.6rem'></div>", unsafe_allow_html=True)
-            if st.button("Refresh", key="cost_explorer_refresh", width="stretch", icon=":material/refresh:"):
-                _handle_refresh(services)
+            # Disabled while a refresh is already in flight - prevents an
+            # accidental duplicate concurrent refresh from this page (the
+            # backend's own CostExplorerBusyError is still the ultimate
+            # guard, e.g. against a second browser tab).
+            if st.button(
+                "Refresh", key="cost_explorer_refresh", width="stretch",
+                icon=":material/refresh:", disabled=bool(active_run),
+            ):
+                _start_refresh(services)
+
+        col_tag_label, col_tag_input = st.columns([1, 4.6])
+        with col_tag_label:
+            st.markdown(
+                '<div style="font-size:13px; color:var(--text-secondary); padding-top:0.55rem;">Tag Allocation</div>',
+                unsafe_allow_html=True,
+            )
+        with col_tag_input:
+            # Free-text, not a fixed dropdown - ANY real AWS Cost
+            # Allocation Tag key works (Environment/Team/Project/
+            # Application/...), never hardcoded to one business tag.
+            st.text_input(
+                "Tag key", value=st.session_state.get(_TAG_KEY_INPUT_KEY, ""),
+                key=_TAG_KEY_INPUT_KEY, placeholder="e.g. Environment, Team, Project, Application",
+                label_visibility="collapsed", disabled=bool(active_run),
+            )
+        st.caption('Enter an AWS Cost Allocation Tag key, then click Refresh to include a "Cost by Tag" breakdown in the next refresh.')
+
+    if active_run:
+        _refresh_progress_fragment(services)
 
     _render_refresh_error()
     _render_date_range_error()
 
 
-def _handle_refresh(services) -> None:
+def _start_refresh(services) -> None:
     from_date = st.session_state.get(_FROM_DATE_KEY)
     to_date = st.session_state.get(_TO_DATE_KEY)
 
@@ -282,22 +329,149 @@ def _handle_refresh(services) -> None:
 
     from_date_str = from_date.isoformat() if from_date else None
     to_date_str = to_date.isoformat() if to_date else None
+    tag_key = (st.session_state.get(_TAG_KEY_INPUT_KEY) or "").strip() or None
 
     try:
-        with st.spinner("Updating cost data…"):
-            services.cost_refresh.refresh(from_date=from_date_str, to_date=to_date_str)
+        result = services.cost_refresh.start_refresh(from_date=from_date_str, to_date=to_date_str, tag_key=tag_key)
     except CostExplorerActionError as exc:
-        st.session_state[_REFRESH_ERROR_KEY] = f"Unable to update cost data. {exc}"
+        st.session_state[_REFRESH_ERROR_KEY] = f"Unable to start cost refresh. {exc}"
         st.rerun()
         return
 
-    # A fresh feed was just published on the backend for every section
-    # (summary/history/services/regions/credits/anomalies/comparison/
-    # report) - drop every cached read so this rerun pulls all of it,
-    # never a stale section left over from the previous date selection.
-    invalidate()
-    st.success("Data updated")
+    st.session_state[_REFRESH_RUN_KEY] = {
+        "run_id": result.get("run_id", "unknown"),
+        "started_at_iso": result.get("started_at"),
+        "started_at_epoch": time.time(),
+        "last_status": None,
+    }
+    st.session_state.pop(_REFRESH_ERROR_KEY, None)
     st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Async refresh progress - auto-polls the backend, mirrors
+# components/investigation_launcher.py's own _progress_fragment pattern.
+# ---------------------------------------------------------------------------
+
+@st.fragment(run_every=2)
+def _refresh_progress_fragment(services) -> None:
+    active = st.session_state.get(_REFRESH_RUN_KEY)
+    if not active:
+        return
+
+    status = None
+    poll_error = None
+    try:
+        status = services.cost_refresh.get_run_status(active["run_id"])
+    except CostExplorerActionError as exc:
+        poll_error = str(exc)
+
+    if status:
+        active["last_status"] = status
+        st.session_state[_REFRESH_RUN_KEY] = active
+    else:
+        status = active.get("last_status")
+
+    _render_refresh_progress_panel(active, status, poll_error)
+
+
+def _render_refresh_progress_panel(active: dict, status: dict | None, poll_error: str | None) -> None:
+    run_status = (status or {}).get("status", "QUEUED")
+    is_terminal = run_status in _TERMINAL_STATES
+    phases = (status or {}).get("phases") or _DEFAULT_REFRESH_PHASES
+    percent = _clamp_percent((status or {}).get("percent"))
+    phase_label = (status or {}).get("phase_label") or ("Queued" if run_status == "QUEUED" else "Waiting for backend status…")
+    elapsed = _refresh_elapsed_seconds(active, status)
+
+    st.markdown("<div style='height:0.7rem'></div>", unsafe_allow_html=True)
+
+    with card(key="cost_refresh_progress_panel"):
+        header_icon = (
+            svg_icon("check-circle", size=17, color="#86efac") if run_status == "COMPLETED"
+            else svg_icon("alert-triangle", size=17, color="#fca5a5") if run_status == "FAILED"
+            else '<span class="ao-pulse-dot"></span>'
+        )
+        title = {
+            "COMPLETED": "Cost Data Updated",
+            "FAILED": "Cost Refresh Failed",
+        }.get(run_status, "Refreshing Cost Data…")
+
+        st.markdown(
+            f"""
+            <div class="ao-progress-header">
+              <div class="ao-progress-header-left">
+                <div class="ao-progress-icon">{header_icon}</div>
+                <div>
+                  <div class="ao-progress-title">{html.escape(title)}</div>
+                  <div class="ao-progress-subtitle"><span class="ao-mono">{html.escape(active.get("run_id", ""))}</span></div>
+                </div>
+              </div>
+            </div>
+            <div class="ao-progress-bar-row">
+              <div class="ao-progress-bar-track">
+                <div class="ao-progress-bar-fill" style="width:{percent}%;"></div>
+              </div>
+              <div class="ao-progress-percent">{percent}%</div>
+            </div>
+            <div class="ao-progress-phase-label">{html.escape(phase_label)}</div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        if run_status == "FAILED" and (status or {}).get("error"):
+            st.markdown(
+                f'<div class="ao-launch-error" style="margin-top:0.7rem;">{svg_icon("alert-triangle", size=14, color="#fca5a5")}'
+                f'<span>{html.escape(str(status["error"]))}</span></div>',
+                unsafe_allow_html=True,
+            )
+
+        if poll_error:
+            st.caption(f"Reconnecting to backend status feed… ({poll_error})")
+
+        st.caption(f"Elapsed: {format_duration(elapsed)}")
+
+        if is_terminal:
+            st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
+            if run_status == "COMPLETED":
+                if st.button("Dismiss", key="cost_refresh_dismiss_ok", width="stretch"):
+                    st.session_state.pop(_REFRESH_RUN_KEY, None)
+                    # A fresh feed was just published on the backend for
+                    # every section - drop every cached read so the next
+                    # rerun pulls all of it, never a stale section left
+                    # over from before this refresh.
+                    invalidate()
+                    st.rerun()
+            else:
+                if st.button("Retry", key="cost_refresh_retry", width="stretch"):
+                    st.session_state.pop(_REFRESH_RUN_KEY, None)
+                    st.rerun()
+        else:
+            st.caption("This panel refreshes automatically every few seconds.")
+
+
+def _clamp_percent(value) -> int:
+    try:
+        pct = float(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(100, round(pct)))
+
+
+def _refresh_elapsed_seconds(active: dict, status: dict | None) -> int:
+    if status and status.get("elapsed_seconds") is not None:
+        try:
+            return int(status["elapsed_seconds"])
+        except (TypeError, ValueError):
+            pass
+
+    started_at = (status or {}).get("started_at") or active.get("started_at_iso")
+    dt = parse_dt(started_at)
+    if dt:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return max(0, int((datetime.now(timezone.utc) - dt).total_seconds()))
+
+    return max(0, int(time.time() - active.get("started_at_epoch", time.time())))
 
 
 def _render_refresh_error() -> None:
@@ -344,7 +518,7 @@ def _active_anomalies(comparison: dict, anomalies_fallback: dict) -> dict:
 # COST OVERVIEW TAB
 # ---------------------------------------------------------------------------
 
-def _render_overview_tab(period: dict, anomalies: dict) -> None:
+def _render_overview_tab(period: dict, anomalies: dict, forecast: dict, tag_allocation: dict) -> None:
     gross_cost = period.get("gross_cost")
     net_cost = period.get("net_cost")
 
@@ -358,6 +532,8 @@ def _render_overview_tab(period: dict, anomalies: dict) -> None:
 
     _render_overview_summary(period)
     st.markdown("<div style='height:1.1rem'></div>", unsafe_allow_html=True)
+    _render_forecast_card(forecast, period.get("currency"))
+    st.markdown("<div style='height:1.1rem'></div>", unsafe_allow_html=True)
     _render_overview_trend(period)
     st.markdown("<div style='height:1.1rem'></div>", unsafe_allow_html=True)
     _render_overview_breakdown_card("Cost by Service", period.get("service_breakdown") or [], "service",
@@ -369,6 +545,8 @@ def _render_overview_tab(period: dict, anomalies: dict) -> None:
     _render_overview_credits(period)
     st.markdown("<div style='height:1.1rem'></div>", unsafe_allow_html=True)
     _render_anomalies_section(anomalies, period.get("currency"))
+    st.markdown("<div style='height:1.1rem'></div>", unsafe_allow_html=True)
+    _render_tag_allocation_section(tag_allocation)
 
 
 def _render_overview_summary(period: dict) -> None:
@@ -678,6 +856,127 @@ def _render_anomalies_section(anomalies: dict, currency=None) -> None:
         if show_details and raw_reason:
             with st.expander("Technical details"):
                 st.code(raw_reason, language=None)
+
+
+# ---------------------------------------------------------------------------
+# Cost forecast (Phase 4 / B7) - AWS's own GetCostForecast projection,
+# never a locally-computed number. Every status below maps 1:1 to
+# collector/cost_explorer.py::get_cost_forecast()'s own real states -
+# "unavailable"/"insufficient_data"/"unsupported_period" are always shown
+# as an honest explanation, never as a $0 projection.
+# ---------------------------------------------------------------------------
+
+def _render_forecast_card(forecast: dict | None, fallback_currency=None) -> None:
+    if not forecast:
+        return  # no refresh has ever run under this feature yet
+
+    status = forecast.get("status")
+    currency = forecast.get("currency") or fallback_currency
+    period = forecast.get("period") or {}
+
+    with card(key="cost_forecast_card"):
+        card_title("Cost Forecast")
+
+        if status == "available":
+            amount = forecast.get("forecast_amount")
+            lower = forecast.get("prediction_interval_lower")
+            upper = forecast.get("prediction_interval_upper")
+
+            st.markdown(
+                f"""
+                <div style="display:flex; align-items:baseline; gap:0.6rem; flex-wrap:wrap;">
+                  <div style="font-size:12.5px; color:var(--text-secondary);">Projected spend / {_format_period_range(period)}</div>
+                </div>
+                <div style="font-size:26px; font-weight:700; color:var(--text-primary); margin-top:0.15rem;">
+                  {_format_money(amount, currency)}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if lower is not None and upper is not None:
+                st.caption(f"AWS's 80% prediction interval: {_format_money(lower, currency)} – {_format_money(upper, currency)}")
+            st.caption("This is AWS's own projection, not a guarantee of actual future spend. No budget is configured, so no over/under-budget comparison is shown.")
+
+        elif status == "insufficient_data":
+            st.markdown(
+                '<div style="font-size:13px; color:var(--text-secondary);">'
+                "Not enough historical cost data yet for AWS to produce a forecast for this account.</div>",
+                unsafe_allow_html=True,
+            )
+        elif status == "unsupported_period":
+            st.markdown(
+                '<div style="font-size:13px; color:var(--text-secondary);">'
+                "AWS could not forecast the requested period.</div>",
+                unsafe_allow_html=True,
+            )
+            if forecast.get("reason"):
+                with st.expander("Technical details"):
+                    st.code(forecast["reason"], language=None)
+        else:  # "unavailable" or anything unrecognized
+            st.markdown(
+                '<div style="font-size:13px; color:var(--text-secondary);">'
+                "Cost forecast is currently unavailable.</div>",
+                unsafe_allow_html=True,
+            )
+            if forecast.get("reason"):
+                with st.expander("Technical details"):
+                    st.code(forecast["reason"], language=None)
+
+
+# ---------------------------------------------------------------------------
+# Tag-based cost allocation (Phase 3 / B8) - real AWS GroupBy TAG data
+# for whatever tag key the user requested on the shared controls above.
+# Every status below maps 1:1 to
+# collector/cost_explorer.py::get_tag_breakdown()'s own real states -
+# never a fabricated cost, never a blind "no data" for a genuine AWS
+# error.
+# ---------------------------------------------------------------------------
+
+_TAG_STATUS_DISPLAY = {
+    "available": ("🟢", "Available"),
+    "empty": ("🟡", "No Data"),
+    "not_activated": ("🟠", "Not Activated"),
+    "unsupported": ("⚪", "Unavailable"),
+    "failed": ("🔴", "Error"),
+}
+
+
+def _render_tag_allocation_section(tag_allocation: dict | None) -> None:
+    if not tag_allocation:
+        return  # no tag key has been requested yet - nothing to show
+
+    tag_key = tag_allocation.get("tag_key") or "—"
+    status = tag_allocation.get("status")
+    icon, label = _TAG_STATUS_DISPLAY.get(status, ("⚪", "Unavailable"))
+    currency = tag_allocation.get("currency")
+    breakdown = tag_allocation.get("breakdown") or []
+    untagged_cost = tag_allocation.get("untagged_cost")
+
+    with card(key="cost_tag_allocation_card"):
+        card_title(f'Cost by Tag — "{tag_key}"')
+
+        st.markdown(
+            f"""
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:0.4rem;">
+              <span style="font-size:18px;">{icon}</span>
+              <span style="font-weight:600; color:var(--text-primary);">{label}</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        if status == "available" and breakdown:
+            table_rows = [[b.get("tag_value") or "Unknown", _format_money(b.get("cost"), currency)] for b in breakdown]
+            render_table(["Tag Value", "Cost"], table_rows)
+            if untagged_cost is not None:
+                st.caption(f'Resources with no value for "{tag_key}": {_format_money(untagged_cost, currency)} (shown separately, never merged into a tag value above).')
+        elif status == "available" and not breakdown and untagged_cost is not None:
+            st.caption(f'All matching cost had no value for "{tag_key}": {_format_money(untagged_cost, currency)}.')
+        elif tag_allocation.get("reason"):
+            st.markdown(
+                f'<div style="font-size:13px; color:var(--text-secondary); line-height:1.5;">{html.escape(tag_allocation["reason"])}</div>',
+                unsafe_allow_html=True,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1166,7 +1465,9 @@ def render(services, config) -> None:
         period = _active_period(summary, comparison)
         anomalies_fallback = services.cost_explorer.get_anomalies()
         anomalies = _active_anomalies(comparison, anomalies_fallback)
-        _render_overview_tab(period, anomalies)
+        forecast = services.cost_explorer.get_forecast() or None
+        tag_allocation = services.cost_explorer.get_tags() or None
+        _render_overview_tab(period, anomalies, forecast, tag_allocation)
 
     with tab_comparison:
         report = services.cost_explorer.get_report()

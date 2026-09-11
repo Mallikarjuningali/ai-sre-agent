@@ -52,6 +52,8 @@ CREDITS_KEY = "cost-explorer/credits"
 SERVICES_KEY = "cost-explorer/services"
 REGIONS_KEY = "cost-explorer/regions"
 ANOMALIES_KEY = "cost-explorer/anomalies"
+TAGS_KEY = "cost-explorer/tags"
+FORECAST_KEY = "cost-explorer/forecast"
 COMPARISON_KEY = "cost-explorer/comparison"
 REPORT_KEY = "cost-explorer/report"
 
@@ -88,6 +90,8 @@ _EMPTY_ANOMALIES: dict[str, Any] = {
 }
 _EMPTY_COMPARISON: dict[str, Any] = {}
 _EMPTY_REPORT: dict[str, Any] = {}
+_EMPTY_TAGS: dict[str, Any] = {}
+_EMPTY_FORECAST: dict[str, Any] = {}
 
 
 class CostExplorerService:
@@ -130,6 +134,18 @@ class CostExplorerService:
         genuinely found $0 difference."""
         return self._get(COMPARISON_KEY, _EMPTY_COMPARISON)
 
+    def get_tags(self) -> dict:
+        """Empty dict when no tag key has been requested yet - a valid
+        "not run" state, distinct from status="empty" (a real AWS answer
+        of zero cost for an activated tag)."""
+        return self._get(TAGS_KEY, _EMPTY_TAGS)
+
+    def get_forecast(self) -> dict:
+        """Empty dict when no refresh has ever run with forecasting
+        enabled - a valid "not run" state, distinct from
+        status="unavailable" (AWS was asked and could not forecast)."""
+        return self._get(FORECAST_KEY, _EMPTY_FORECAST)
+
     def get_report(self) -> dict:
         return self._get(REPORT_KEY, _EMPTY_REPORT)
 
@@ -144,11 +160,20 @@ class CostExplorerActionError(Exception):
 
 class CostExplorerBackend(ABC):
     @abstractmethod
-    def refresh(self, from_date: str | None = None, to_date: str | None = None) -> dict:
-        """Trigger a fresh AWS Cost Explorer query. from_date/to_date
-        (optional, both required together) request a Month/Period
-        Comparison for that user-selected range in the same refresh.
-        Returns the backend's result dict."""
+    def start_refresh(
+        self, from_date: str | None = None, to_date: str | None = None, tag_key: str | None = None
+    ) -> dict:
+        """Start a fresh AWS Cost Explorer query in the background.
+        from_date/to_date (optional, both required together) request a
+        Month/Period Comparison for that user-selected range in the same
+        refresh. tag_key (optional, any real AWS Cost Allocation Tag key)
+        requests a tag-based cost allocation breakdown in the same
+        refresh. Returns {run_id, status, started_at} immediately - the
+        actual refresh runs asynchronously; poll get_status(run_id)."""
+
+    @abstractmethod
+    def get_status(self, run_id: str) -> dict | None:
+        """Poll refresh progress. Returns None if the backend has nothing for this run yet."""
 
 
 class UnavailableCostExplorerBackend(CostExplorerBackend):
@@ -156,12 +181,17 @@ class UnavailableCostExplorerBackend(CostExplorerBackend):
 
     _MESSAGE = "Refreshing Cost Explorer data requires a REST backend. Configure one on the Settings page."
 
-    def refresh(self, from_date: str | None = None, to_date: str | None = None) -> dict:
+    def start_refresh(
+        self, from_date: str | None = None, to_date: str | None = None, tag_key: str | None = None
+    ) -> dict:
         raise CostExplorerActionError(self._MESSAGE)
+
+    def get_status(self, run_id: str) -> dict | None:
+        return None
 
 
 class RestCostExplorerBackend(CostExplorerBackend):
-    """Calls the real backend endpoint."""
+    """Calls the real backend endpoints."""
 
     def __init__(self, base_url: str, api_key: str | None = None):
         self._base_url = base_url.rstrip("/")
@@ -173,27 +203,46 @@ class RestCostExplorerBackend(CostExplorerBackend):
             headers["Authorization"] = f"Bearer {self._api_key}"
         return headers
 
-    def refresh(self, from_date: str | None = None, to_date: str | None = None) -> dict:
+    def start_refresh(
+        self, from_date: str | None = None, to_date: str | None = None, tag_key: str | None = None
+    ) -> dict:
         import requests
 
         url = f"{self._base_url}/cost-explorer/refresh"
-        # Empty body ({}) when no comparison dates are selected - matches
-        # exactly what every caller already sent before this feature
-        # existed, so the existing endpoint contract is unaffected.
+        # Empty body ({}) when no comparison dates/tag key are selected -
+        # matches exactly what every caller already sent before these
+        # features existed, so the existing endpoint contract is
+        # unaffected.
         payload = {}
         if from_date:
             payload["from_date"] = from_date
         if to_date:
             payload["to_date"] = to_date
+        if tag_key:
+            payload["tag_key"] = tag_key
         try:
-            # A cost refresh runs several boto3 calls plus one Gemini call
-            # synchronously (see api/cost_explorer_manager.py) - a longer
-            # timeout than the simple delete-executions call needs.
-            response = requests.post(url, json=payload, headers=self._headers(), timeout=60)
+            # Starting a refresh only claims a run_id and spawns a
+            # background thread on the backend - it returns almost
+            # immediately now, same short timeout as other start-a-run
+            # calls (see services/investigation_service.py).
+            response = requests.post(url, json=payload, headers=self._headers(), timeout=15)
             response.raise_for_status()
             return response.json()
         except Exception as exc:  # noqa: BLE001 - surface as CostExplorerActionError to callers
             raise CostExplorerActionError(f"Failed to POST {url}: {exc}") from exc
+
+    def get_status(self, run_id: str) -> dict | None:
+        import requests
+
+        url = f"{self._base_url}/cost-explorer/status/{run_id}"
+        try:
+            response = requests.get(url, headers=self._headers(), timeout=10)
+            if response.status_code == 404:
+                return None
+            response.raise_for_status()
+            return response.json()
+        except Exception as exc:  # noqa: BLE001
+            raise CostExplorerActionError(f"Failed to GET {url}: {exc}") from exc
 
 
 def get_cost_explorer_backend(config: AppConfig) -> CostExplorerBackend:
@@ -211,5 +260,10 @@ class CostRefreshService:
     def is_live(self) -> bool:
         return isinstance(self._backend, RestCostExplorerBackend)
 
-    def refresh(self, from_date: str | None = None, to_date: str | None = None) -> dict:
-        return self._backend.refresh(from_date=from_date, to_date=to_date)
+    def start_refresh(
+        self, from_date: str | None = None, to_date: str | None = None, tag_key: str | None = None
+    ) -> dict:
+        return self._backend.start_refresh(from_date=from_date, to_date=to_date, tag_key=tag_key)
+
+    def get_run_status(self, run_id: str) -> dict | None:
+        return self._backend.get_status(run_id)

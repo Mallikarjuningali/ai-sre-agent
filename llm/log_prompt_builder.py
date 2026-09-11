@@ -40,9 +40,13 @@ class LogPromptBuilder:
         resource_type: Optional[str],
         run_id: str,
         evidence_gap: Optional[Dict[str, Any]] = None,
+        investigation_plan: Optional[Dict[str, Any]] = None,
+        sources: Optional[Any] = None,
     ) -> str:
 
         evidence_gap = evidence_gap or {}
+        investigation_plan = investigation_plan or {}
+        sources = sources or []
 
         prompt = f"""
 You are the AegisOps SRE investigation assistant, performing a
@@ -99,10 +103,27 @@ CRITICAL RULES - follow every one of these:
     requested it; do not overstate their importance in that case.
 12. analyzed_window below is the SAME incident window the original
     metric-based investigation already established (every log event was
-    filtered to fall inside it) - temporal alignment between a log
+    filtered to fall inside it) - its "incident_time" is the single
+    timestamp the incident was determined to have started at, and
+    "start"/"end" are exactly incident_time +/- the configured buffer, not
+    an independently chosen range. Temporal alignment between a log
     pattern's first_seen/last_seen and this window is expected by
     construction, not independent proof. Use it as supporting context for
     correlation, never as certainty by itself.
+13. SOURCES CHECKED below lists every source that was actually queried and
+    its real status. Never claim a source was checked if it is not listed
+    there, and never generalize one source's "0 relevant events" into "no
+    errors exist anywhere" - a source with status "not_discoverable" or
+    "not_configured" means it was NEVER queried at all, which is a
+    completely different fact from a queried source finding nothing.
+14. Do not invent log group/stream names, file paths, or event messages
+    beyond what appears in SOURCES CHECKED or the LOG EVIDENCE PACKAGE
+    below.
+15. In "correlation", explicitly state whether the log evidence SUPPORTS,
+    CONTRADICTS, or simply fails to resolve the existing RCA - do not
+    convert an absence of contradicting evidence into proof the RCA is
+    correct, and do not convert an absence of supporting evidence into
+    proof the RCA is wrong.
 
 Return ONLY valid JSON. Do not include markdown. Do not wrap the JSON in
 ```.
@@ -122,6 +143,12 @@ Return this exact schema:
         "not_found": [],
         "unavailable": [],
         "truncated": []
+    }},
+    "correlation": {{
+        "supports_existing_rca": false,
+        "contradicts_existing_rca": false,
+        "new_findings": [],
+        "reasoning": ""
     }}
 }}
 
@@ -146,6 +173,12 @@ Field notes:
   present below.
 - evidence_status: every one of the four lists may be empty, but the keys
   must always be present.
+- correlation: supports_existing_rca/contradicts_existing_rca are booleans
+  reflecting whether the NEW log evidence backs up or conflicts with the
+  existing RCA (both may be false if the evidence is inconclusive - they
+  must never both be true at once). new_findings lists anything the logs
+  reveal that the existing RCA did not already state. reasoning explains
+  the correlation judgment in 1-3 sentences, citing specific evidence.
 
 INVESTIGATION
 Resource: {resource_id}
@@ -166,6 +199,15 @@ EVIDENCE GAP (mechanically derived from the RCA text above - see rule 11)
 gap_detected: {json.dumps(evidence_gap.get("gap_detected", False))}
 categories: {json.dumps(evidence_gap.get("categories") or [])}
 matched_signals: {json.dumps(evidence_gap.get("signals") or [])}
+
+INVESTIGATION PLAN (which log evidence was deemed relevant, and why - the
+plan itself is not evidence, only an explanation of intent)
+required: {json.dumps(investigation_plan.get("required", False))}
+reason: {json.dumps(investigation_plan.get("reason") or "")}
+components: {json.dumps(investigation_plan.get("components") or [], separators=(",", ":"))}
+
+SOURCES CHECKED (see rule 13 - a source not listed here was NEVER queried)
+{json.dumps(sources, separators=(",", ":"))}
 
 LOG EVIDENCE PACKAGE (already sanitized - IP addresses/hostnames/URLs/
 credentials/tokens have been redacted; every remaining timestamp, status

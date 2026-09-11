@@ -488,12 +488,115 @@ def _render_evidence_gap_note(analysis: dict) -> None:
         st.caption("🧭 The existing RCA did not identify a specific evidence gap - logs were gathered at your request")
 
 
-def _render_log_evidence_results(evidence_package: dict, analysis: dict) -> None:
+def _render_investigation_plan_block(investigation_plan: dict) -> None:
+    """Shows WHY logs were requested and WHAT was deemed relevant, before
+    any source/results data - additive only, renders nothing for older
+    persisted results that predate this field."""
+    if not investigation_plan:
+        return
+    components = investigation_plan.get("components") or []
+    st.markdown(
+        f'<div style="font-size:12.5px; color:var(--text-secondary); margin-bottom:0.5rem;">{investigation_plan.get("reason") or ""}</div>',
+        unsafe_allow_html=True,
+    )
+    if components:
+        st.markdown('<div class="ao-kpi-label" style="margin-bottom:0.3rem;">Investigation Plan</div>', unsafe_allow_html=True)
+        for component in components:
+            evidence_terms = ", ".join(component.get("evidence_to_check") or [])
+            log_sources = ", ".join(component.get("log_sources") or [])
+            st.markdown(
+                f"""
+                <div style="padding:0.4rem 0; border-bottom:1px solid var(--border-subtle);">
+                  <div style="font-size:13px; font-weight:600; color:var(--text-primary);">{component.get("component", "").replace("_", " ").title()}</div>
+                  <div style="font-size:12px; color:var(--text-muted); margin-top:1px;">Logs checked: {log_sources or "—"}</div>
+                  <div style="font-size:12px; color:var(--text-muted);">Evidence checked for: {evidence_terms or "—"}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
+
+
+_SOURCE_STATUS_LABELS = {
+    "available": ("✓", "Available"),
+    "unavailable": ("🚫", "Unavailable"),
+    "not_configured": ("🟡", "Not Configured"),
+    "not_discoverable": ("🚫", "Not Discoverable"),
+}
+
+
+def _render_sources_checked_table(sources) -> None:
+    """Replaces a single flat source/total/relevant row with a per-source
+    breakdown - required so a resource with multiple relevant sources (or
+    one that was never discoverable) is never collapsed into one
+    misleading number. Additive only - renders nothing for older
+    persisted results that predate this field (those still show the
+    single source/total/relevant row in the caller)."""
+    if not sources:
+        return
+    st.markdown('<div class="ao-kpi-label" style="margin-bottom:0.3rem;">Sources Checked</div>', unsafe_allow_html=True)
+    for source in sources:
+        icon, label = _SOURCE_STATUS_LABELS.get(source.get("status"), ("—", source.get("status") or "Unknown"))
+        name = source.get("name") or "—"
+        st.markdown(
+            f"""
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:12px;
+                        padding:0.4rem 0; border-bottom:1px solid var(--border-subtle);">
+              <div>
+                <span style="font-size:13px; font-weight:600; color:var(--text-primary);">{icon} {name}</span>
+                <span style="font-size:11.5px; color:var(--text-muted); margin-left:6px;">{label}</span>
+              </div>
+              <div style="font-size:12.5px; color:var(--text-secondary); white-space:nowrap;">
+                {format_number(source.get("events_found", 0))} events &middot; {format_number(source.get("relevant_events", 0))} relevant
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
+
+
+def _render_correlation_block(correlation: dict) -> None:
+    """Additive - explicit "supports/contradicts/new finding/inconclusive"
+    indicator, distinct from the "Additional/Updated RCA" block below (that
+    one only appears when materially_changes_rca is true; this renders
+    whenever Gemini returned a correlation judgment at all)."""
+    if not correlation:
+        return
+    supports = correlation.get("supports_existing_rca")
+    contradicts = correlation.get("contradicts_existing_rca")
+    new_findings = correlation.get("new_findings") or []
+
+    if contradicts:
+        icon, label, color = "⚠", "Contradicts existing RCA", "rgba(239,68,68,0.12)"
+    elif supports:
+        icon, label, color = "✓", "Supports existing RCA", "rgba(34,197,94,0.12)"
+    elif new_findings:
+        icon, label, color = "➕", "New finding", "rgba(59,130,246,0.12)"
+    else:
+        icon, label, color = "•", "No additional evidence either way", "var(--bg-elevated)"
+
+    reasoning = correlation.get("reasoning") or ""
+    st.markdown(
+        f"""
+        <div style="margin-top:0.5rem; padding:0.5rem 0.8rem; background:{color}; border-radius:var(--radius-sm);">
+          <span style="font-size:12.5px; font-weight:700; color:var(--text-primary);">{icon} {label}</span>
+          {f'<div style="font-size:12.5px; color:var(--text-secondary); margin-top:2px;">{reasoning}</div>' if reasoning else ""}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_log_evidence_results(evidence_package: dict, analysis: dict, investigation_plan: dict = None, sources=None) -> None:
     log_source = evidence_package.get("log_source")
+
+    _render_investigation_plan_block(investigation_plan)
 
     if log_source == "unavailable" or not log_source:
         reason = (evidence_package.get("limitations") or ["Logs unavailable for this resource."])[0]
         empty_state("Logs unavailable for this resource", reason, "🚫")
+        _render_sources_checked_table(sources)
         _render_evidence_gap_note(analysis)
         # Gemini was still asked to combine this with the existing RCA -
         # show its honest summary (e.g. "analysis is based solely on the
@@ -521,11 +624,14 @@ def _render_log_evidence_results(evidence_package: dict, analysis: dict) -> None
         unsafe_allow_html=True,
     )
 
+    _render_sources_checked_table(sources)
     _render_evidence_gap_note(analysis)
 
     limitations = evidence_package.get("limitations") or []
     for limitation in limitations:
         st.caption(f"ℹ️ {limitation}")
+
+    source_names = ", ".join(s.get("name") or "the checked source" for s in (sources or []) if s.get("status") == "available")
 
     patterns = evidence_package.get("patterns") or []
     if patterns:
@@ -534,7 +640,10 @@ def _render_log_evidence_results(evidence_package: dict, analysis: dict) -> None
             _render_log_pattern_row(pattern)
     elif relevant_events == 0:
         st.markdown("<div style='height:0.3rem'></div>", unsafe_allow_html=True)
-        st.info("No relevant log evidence was found in the analyzed window.")
+        if source_names:
+            st.info(f"No relevant events were found in {source_names} during the investigated incident window.")
+        else:
+            st.info("No relevant log evidence was found in the analyzed window.")
 
     timeline = evidence_package.get("timeline") or []
     if timeline:
@@ -568,6 +677,8 @@ def _render_log_evidence_results(evidence_package: dict, analysis: dict) -> None
     if uncertainty:
         items = "".join(f'<div style="font-size:12px; color:var(--text-muted); padding:0.15rem 0;">⚠ {u}</div>' for u in uncertainty)
         st.markdown(f'<div style="margin-top:0.4rem;">{items}</div>', unsafe_allow_html=True)
+
+    _render_correlation_block(analysis.get("correlation"))
 
     if analysis.get("materially_changes_rca"):
         st.markdown("<div style='height:0.8rem'></div>", unsafe_allow_html=True)
@@ -613,7 +724,10 @@ def _render_log_investigation_card(services, run_id: str, report: dict, report_k
             results = {"investigated": False}
 
         if results.get("investigated"):
-            _render_log_evidence_results(results.get("evidence_package") or {}, results.get("analysis") or {})
+            _render_log_evidence_results(
+                results.get("evidence_package") or {}, results.get("analysis") or {},
+                investigation_plan=results.get("investigation_plan"), sources=results.get("sources"),
+            )
             st.markdown("<div style='height:0.6rem'></div>", unsafe_allow_html=True)
             button_label = "Re-investigate Logs"
         else:

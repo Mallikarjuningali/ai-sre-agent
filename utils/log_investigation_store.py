@@ -86,10 +86,17 @@ def save_result(
     context_reference: str,
     evidence_package: Dict[str, Any],
     analysis: Dict[str, Any],
+    investigation_plan: Optional[Dict[str, Any]] = None,
+    sources: Optional[Any] = None,
+    incident_window: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Overwrites this investigation_id's single stored result -
     re-clicking "Investigate Logs" replaces the prior result, it is never
-    appended to (unlike Follow-Up's growing conversation)."""
+    appended to (unlike Follow-Up's growing conversation).
+
+    investigation_plan/sources/incident_window are optional, additive
+    fields (default None) - existing callers that omit them keep working
+    unchanged; api/log_investigation_manager.py now always supplies them."""
 
     with _lock_for(investigation_id):
         result = {
@@ -99,6 +106,9 @@ def save_result(
             "resource_type": resource_type,
             "report_reference": report_reference,
             "context_reference": context_reference,
+            "investigation_plan": investigation_plan,
+            "sources": sources,
+            "incident_window": incident_window,
             "evidence_package": evidence_package,
             "analysis": analysis,
         }

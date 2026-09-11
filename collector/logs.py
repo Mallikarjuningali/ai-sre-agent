@@ -32,12 +32,13 @@ from datetime import datetime, timedelta, UTC
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from utils.aws_clients import get_logs_client, get_s3_client, get_autoscaling_client, get_elbv2_client
+from utils.aws_clients import get_logs_client, get_s3_client, get_autoscaling_client, get_elbv2_client, get_ec2_client
 from utils.logger import get_logger
 from config.settings import (
     LOG_MAX_GROUPS_SCANNED,
     LOG_MAX_S3_OBJECTS_SCANNED,
     LOG_MAX_RAW_EVENTS,
+    LOG_MAX_EC2_SOURCES_PER_INVESTIGATION,
 )
 
 logger = get_logger(__name__)
@@ -46,6 +47,7 @@ logs_client = get_logs_client()
 s3_client = get_s3_client()
 autoscaling_client = get_autoscaling_client()
 elbv2_client = get_elbv2_client()
+ec2_client = get_ec2_client()
 
 
 # =========================================================
@@ -134,6 +136,119 @@ def discover_ec2_log_source(instance_id, source_hints=None):
     except (BotoCoreError, ClientError) as exc:
         logger.error(f"EC2 log source discovery failed for {instance_id}: {exc}")
         raise
+
+
+def discover_ec2_log_sources(instance_id, source_hints=None, max_sources=LOG_MAX_EC2_SOURCES_PER_INVESTIGATION):
+    """Like discover_ec2_log_source() but returns a LIST of up to
+    max_sources DISTINCT matching log groups instead of stopping at the
+    first/best one - e.g. an instance shipping both an nginx-tagged group
+    and a system-tagged group can have BOTH investigated (bounded), not
+    just whichever one happened to rank highest. Each returned entry is
+    {"log_group": ..., "log_stream": ..., "matched_hint": "<hint>"|None}
+    (matched_hint is None for a candidate that matched no hint - included
+    only to fill remaining slots up to max_sources when hinted candidates
+    are fewer than that).
+
+    Uses the SAME bounded scan (LOG_MAX_GROUPS_SCANNED) as the singular
+    discover_ec2_log_source(), which is left completely unchanged by this
+    function - this is a separate, additive discovery path, not a
+    refactor of the existing one, so existing callers/tests keep their
+    exact original behavior."""
+
+    hints = [h.lower() for h in (source_hints or [])]
+    hinted_matches = []
+    unhinted_matches = []
+
+    try:
+        groups_scanned = 0
+        paginator = logs_client.get_paginator("describe_log_groups")
+
+        for page in paginator.paginate():
+
+            for group in page.get("logGroups", []):
+
+                if groups_scanned >= LOG_MAX_GROUPS_SCANNED:
+                    logger.info(
+                        f"EC2 multi-source log discovery for {instance_id} stopped after "
+                        f"{LOG_MAX_GROUPS_SCANNED} log groups scanned (bounded)."
+                    )
+                    return (hinted_matches + unhinted_matches)[:max_sources]
+
+                groups_scanned += 1
+                log_group_name = group.get("logGroupName")
+
+                try:
+                    streams_response = logs_client.describe_log_streams(
+                        logGroupName=log_group_name,
+                        logStreamNamePrefix=instance_id,
+                        limit=1,
+                    )
+                except (BotoCoreError, ClientError) as exc:
+                    logger.warning(f"describe_log_streams failed for {log_group_name}: {exc}")
+                    continue
+
+                streams = streams_response.get("logStreams") or []
+                if not streams:
+                    continue
+
+                matched_hint = next((hint for hint in hints if hint in log_group_name.lower()), None)
+                candidate = {
+                    "log_group": log_group_name,
+                    "log_stream": streams[0]["logStreamName"],
+                    "matched_hint": matched_hint,
+                }
+
+                if matched_hint:
+                    hinted_matches.append(candidate)
+                else:
+                    unhinted_matches.append(candidate)
+
+                if len(hinted_matches) >= max_sources:
+                    # Enough genuinely relevant sources found - no need to
+                    # keep scanning further groups.
+                    return hinted_matches[:max_sources]
+
+        return (hinted_matches + unhinted_matches)[:max_sources]
+
+    except (BotoCoreError, ClientError) as exc:
+        logger.error(f"EC2 multi-source log discovery failed for {instance_id}: {exc}")
+        raise
+
+
+# =========================================================
+# EC2 - VPC Flow Logs (availability check only)
+# =========================================================
+# Security Groups themselves produce no log stream - if a network/
+# connectivity-suspected RCA needs evidence beyond CloudWatch metrics/
+# CloudTrail (already available elsewhere in the existing investigation),
+# VPC Flow Logs are the real, documented AWS mechanism, IF the account has
+# configured one with a CloudWatch Logs destination. This function only
+# answers "is one configured and discoverable" - it deliberately does NOT
+# fetch flow log events (that requires resolving the instance's ENI IDs
+# and paginating per-ENI log streams, a meaningfully separate discovery
+# path) - reporting a real, honest "available" or "not_configured" status
+# is far more valuable than fabricating a fetch.
+
+def discover_vpc_flow_log_source(instance_id):
+    """Returns {"status": "available", "log_group": "..."} if at least one
+    Flow Log for this instance is configured with a CloudWatch Logs
+    destination, or {"status": "not_configured", "log_group": None}
+    otherwise - one bounded, resource-filtered describe_flow_logs call,
+    never an account-wide scan."""
+
+    try:
+        response = ec2_client.describe_flow_logs(
+            Filters=[{"Name": "resource-id", "Values": [instance_id]}]
+        )
+    except (BotoCoreError, ClientError) as exc:
+        logger.error(f"describe_flow_logs failed for {instance_id}: {exc}")
+        raise
+
+    for flow_log in response.get("FlowLogs", []):
+        if flow_log.get("LogDestinationType") == "cloud-watch-logs" and flow_log.get("LogGroupName"):
+            return {"status": "available", "log_group": flow_log["LogGroupName"]}
+
+    return {"status": "not_configured", "log_group": None}
 
 
 def fetch_ec2_log_events(log_group, log_stream, start_dt, end_dt):

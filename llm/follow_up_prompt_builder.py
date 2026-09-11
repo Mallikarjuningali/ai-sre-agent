@@ -162,6 +162,42 @@ class FollowUpPromptBuilder:
         return extremes
 
     # =====================================================
+    # Log Investigation awareness - reads an ALREADY-PERSISTED,
+    # ALREADY-SANITIZED result (see utils/log_investigation_store.py /
+    # api/log_investigation_manager.py) - never re-fetches logs, never
+    # re-sanitizes, never calls AWS. Purely a compact summary of data
+    # that was already reduced/sanitized before this follow-up question
+    # was ever asked.
+    # =====================================================
+
+    @staticmethod
+    def _log_investigation_summary(log_investigation: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """None when Log Investigation was never performed for this
+        investigation - the caller/prompt must say so explicitly (state A
+        from the follow-up spec), never silently omit the section."""
+        if not log_investigation:
+            return {"performed": False}
+
+        evidence_package = log_investigation.get("evidence_package") or {}
+        analysis = log_investigation.get("analysis") or {}
+
+        return {
+            "performed": True,
+            "investigation_plan": log_investigation.get("investigation_plan"),
+            "sources": log_investigation.get("sources") or [],
+            "incident_window": log_investigation.get("incident_window"),
+            "log_source_overall_status": evidence_package.get("log_source"),
+            "total_events": evidence_package.get("total_events"),
+            "relevant_events": evidence_package.get("relevant_events"),
+            "patterns": evidence_package.get("patterns") or [],
+            "timeline": evidence_package.get("timeline") or [],
+            "limitations": evidence_package.get("limitations") or [],
+            "log_analysis_summary": analysis.get("log_analysis_summary"),
+            "established_by_logs": analysis.get("established_by_logs"),
+            "correlation": analysis.get("correlation"),
+        }
+
+    # =====================================================
     # Prompt assembly
     # =====================================================
 
@@ -175,9 +211,11 @@ class FollowUpPromptBuilder:
         time_window: Optional[Dict[str, Optional[str]]],
         conversation_history: List[Dict[str, Any]],
         question: str,
+        log_investigation: Optional[Dict[str, Any]] = None,
     ) -> str:
 
         sanitized_context = self.sanitizer.sanitize(raw_context)
+        log_investigation_summary = self._log_investigation_summary(log_investigation)
 
         timeline = {
             "cloudtrail_events": self._cloudtrail_timeline(raw_context),
@@ -214,6 +252,35 @@ available investigation evidence.") rather than guessing. Do not claim
 certainty when evidence is incomplete or absent - for example, if no
 database telemetry was collected, do not answer a database question as if
 it had been.
+
+LOG INVESTIGATION section below (if present) is a SEPARATE, optional,
+later stage the user may or may not have triggered for this same
+investigation. You MUST distinguish exactly these four cases and never
+confuse them:
+A. performed is false -> Log Investigation was never run for this
+   investigation. Say so plainly (e.g. "Log investigation has not been
+   performed for this incident.") - do not guess what logs might show.
+B. performed is true AND patterns/timeline/relevant_events show real
+   findings -> answer using that actual evidence, and say whether it
+   supports, contradicts, or is inconclusive relative to the RCA (see
+   "correlation" if present).
+C. performed is true AND a source's status is "unavailable",
+   "not_configured", or "not_discoverable" -> say the log investigation
+   was performed but the required log source was not available/
+   discoverable - never say "no errors were found" for a source that was
+   never actually queried.
+D. performed is true AND relevant_events is 0 for a source that WAS
+   queried (status "available") -> say the available log source was
+   checked during the incident window but no relevant events matching the
+   investigation criteria were found - this is a different fact from case
+   C and must never be phrased the same way.
+
+If asked what time period/window was checked, answer using
+LOG INVESTIGATION's own "incident_window" (start/end), and when its
+"incident_time" is present, phrase the answer as "<start>-<end>, based on
+the <incident_time> incident time" (e.g. "10:15-10:45, based on the 10:30
+incident time.") - never invent a different time period, and never
+describe it as a wider range than incident_window actually states.
 
 Answer the user's question directly first, then provide the supporting
 evidence. Keep the response concise but technically useful.
@@ -259,6 +326,11 @@ Summary: {report.get("summary", "")}
 Root cause: {report.get("root_cause", "")}
 Original evidence: {json.dumps(report.get("evidence") or [], separators=(",", ":"))}
 Original recommendations: {json.dumps(report.get("recommendations") or [], separators=(",", ":"))}
+
+LOG INVESTIGATION (see rule above - "performed": false means this stage was
+never run for this investigation; do not treat its absence as evidence of
+anything about the incident itself)
+{json.dumps(log_investigation_summary, separators=(",", ":"), default=str)}
 
 TIMELINE
 {json.dumps(timeline, separators=(",", ":"))}

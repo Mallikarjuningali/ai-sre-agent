@@ -134,14 +134,52 @@ def filter_by_time(events: List[Dict[str, Any]], window: Dict[str, datetime]) ->
 # Pipeline stage 2 - relevance filtering
 # =========================================================
 
-def filter_by_relevance(events: List[Dict[str, Any]], tokens: List[str]) -> List[Dict[str, Any]]:
+def event_is_relevant(
+    event: Dict[str, Any],
+    tokens: List[str],
+    tokens_by_source: Optional[Dict[str, List[str]]] = None,
+) -> bool:
+    """A single event is relevant when EITHER the generic, report-driven
+    tokens match its message, OR - when this event carries a "source" key
+    and that source has its own investigation-specific filter terms in
+    tokens_by_source (see context/evidence_gap.py's per-component
+    "filters_by_source") - one of THAT source's own terms matches. Both
+    checks are case-insensitive substring matches; neither ever replaces
+    the other, matching the required "generic OR investigation-specific"
+    relevance model."""
+
+    message = event.get("message", "").lower()
+
+    if any(token in message for token in tokens):
+        return True
+
+    if tokens_by_source:
+        source_tokens = tokens_by_source.get(event.get("source"))
+        if source_tokens and any(token in message for token in source_tokens):
+            return True
+
+    return False
+
+
+def filter_by_relevance(
+    events: List[Dict[str, Any]],
+    tokens: List[str],
+    tokens_by_source: Optional[Dict[str, List[str]]] = None,
+) -> List[Dict[str, Any]]:
     """Keeps only events whose message contains at least one relevance
     token (case-insensitive substring match) - a mechanical text filter,
-    not a root-cause judgment. Bounded to LOG_MAX_RELEVANT_EVENTS via even
-    sampling across the full ordered match list (never biased toward only
-    the earliest or only the latest matches)."""
+    not a root-cause judgment. `tokens` is the generic, report-driven set
+    (always applied); `tokens_by_source`, if given, is an ADDITIONAL,
+    per-source-type set of investigation-plan-derived terms (see
+    context/evidence_gap.py::build_log_investigation_plan's
+    "filters_by_source") applied only to events whose own "source" key
+    matches - an event is kept if EITHER check matches, never only the
+    investigation-specific one (the generic detection is never removed).
+    Bounded to LOG_MAX_RELEVANT_EVENTS via even sampling across the full
+    ordered match list (never biased toward only the earliest or only the
+    latest matches)."""
 
-    matched = [e for e in events if any(token in e.get("message", "").lower() for token in tokens)]
+    matched = [e for e in events if event_is_relevant(e, tokens, tokens_by_source)]
     return _bounded_sample(matched, LOG_MAX_RELEVANT_EVENTS)
 
 
@@ -286,6 +324,8 @@ def build_evidence_package(
     analyzed_window: Dict[str, Any],
     raw_events: List[Dict[str, Any]],
     report: Dict[str, Any],
+    additional_tokens: Optional[List[str]] = None,
+    additional_tokens_by_source: Optional[Dict[str, List[str]]] = None,
 ) -> Dict[str, Any]:
     """Runs the full pipeline and assembles the Log Evidence Package.
     `requested_window`/`analyzed_window` are both
@@ -293,7 +333,17 @@ def build_evidence_package(
     identical unless a source-specific constraint narrowed what was
     actually queried (mirrors the Cost Anomaly Detection feature's own
     requested-vs-analyzed distinction for a different bounded-window
-    case)."""
+    case).
+
+    `additional_tokens`/`additional_tokens_by_source` are optional,
+    investigation-plan-derived terms (see
+    context/evidence_gap.py::build_log_investigation_plan's
+    "evidence_to_check"/"filters_by_source") - when given, they are UNIONED
+    with (never replace) the existing generic, report-driven relevance
+    tokens, so the plan actually drives what gets kept without weakening
+    the pre-existing generic detection. `total_events` still reflects every
+    raw event fetched, before either relevance check - only
+    `relevant_events` and everything derived from it is affected."""
 
     limitations: List[str] = []
 
@@ -311,10 +361,19 @@ def build_evidence_package(
             f"on raw events ({LOG_MAX_RAW_EVENTS}) was reached."
         )
 
-    tokens, categories_matched = relevance_tokens_for_report(report)
-    relevant_events = filter_by_relevance(time_filtered, tokens)
+    report_tokens, categories_matched = relevance_tokens_for_report(report)
+    plan_tokens = sorted({token.lower() for token in (additional_tokens or [])})
+    tokens = sorted(set(report_tokens) | set(plan_tokens))
+    tokens_by_source = None
+    if additional_tokens_by_source:
+        tokens_by_source = {
+            source: sorted({token.lower() for token in terms})
+            for source, terms in additional_tokens_by_source.items()
+        }
 
-    relevant_before_cap = len([e for e in time_filtered if any(t in e.get("message", "").lower() for t in tokens)])
+    relevant_events = filter_by_relevance(time_filtered, tokens, tokens_by_source)
+
+    relevant_before_cap = len([e for e in time_filtered if event_is_relevant(e, tokens, tokens_by_source)])
     if relevant_before_cap > LOG_MAX_RELEVANT_EVENTS:
         limitations.append(
             "Evidence was truncated because the configured investigation limit "

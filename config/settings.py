@@ -100,12 +100,14 @@ FOLLOW_UP_TIMELINE_MAX_EVENTS = 20
 # collector/autoscaling.py, collector/cloudtrail.py, or
 # api/investigation_manager.py.
 
-# Buffer added before/after the derived incident window (see
-# utils/incident_window.py) when actually querying a log source -
-# configurable so the window can never silently balloon to a hardcoded
-# large range like 24 hours.
-LOG_INCIDENT_WINDOW_BEFORE_MINUTES = 10
-LOG_INCIDENT_WINDOW_AFTER_MINUTES = 10
+# Buffer added before/after the single derived incident_time (see
+# utils/incident_window.py::resolve_analysis_window - incident_time +/-
+# these values, never "earliest breach - buffer" through "latest breach +
+# buffer") when actually querying a log source - configurable so the
+# window can never silently balloon to a hardcoded large range like 24
+# hours.
+LOG_INCIDENT_WINDOW_BEFORE_MINUTES = 15
+LOG_INCIDENT_WINDOW_AFTER_MINUTES = 15
 
 # When no metric in the existing context has both a configured threshold
 # (TH) and a point that actually breaches it, there is no confident
@@ -135,6 +137,13 @@ LOG_MAX_S3_OBJECTS_SCANNED = 50
 # discovery attempt, so a very large ASG can't turn one investigation
 # into a discovery call per instance with no ceiling.
 LOG_MAX_ASG_MEMBER_INSTANCES_SCANNED = 5
+
+# When the evidence-gap assessment (context/evidence_gap.py) identifies
+# more than one relevant log source hint for an EC2 investigation (e.g.
+# an instance shipping both an nginx-tagged group and a system-tagged
+# group), this bounds how many DISTINCT log groups get investigated in
+# one pass - never every log group the account happens to have.
+LOG_MAX_EC2_SOURCES_PER_INVESTIGATION = 3
 
 # Hard cap on raw log/event lines actually pulled from AWS for a single
 # Log Investigation, before any local filtering - protects against a

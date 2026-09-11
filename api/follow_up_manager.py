@@ -23,6 +23,13 @@ Purpose:
     the original report is immutable, so a follow-up about a superseded
     run is rejected with a clear message rather than silently answered
     against newer evidence.
+
+    If a Log Investigation (api/log_investigation_manager.py) has been
+    performed for this same investigation_id, its ALREADY-PERSISTED,
+    ALREADY-SANITIZED result (utils/log_investigation_store.py::load_result -
+    the existing, public read function) is read here too and handed to
+    FollowUpPromptBuilder - this module never re-fetches logs, never
+    re-sanitizes, and never calls AWS on behalf of a follow-up question.
 =========================================================
 """
 
@@ -36,7 +43,7 @@ from typing import Any, Dict, Optional
 from config.settings import FOLLOW_UP_MAX_QUESTION_LENGTH, FOLLOW_UP_PROMPT_HISTORY_MESSAGES
 from llm.follow_up_prompt_builder import FollowUpPromptBuilder
 from llm.llm_engine import LLMEngine
-from utils import conversation_store
+from utils import conversation_store, log_investigation_store
 from utils.dashboard_export import CONTEXT_DIR, REPORTS_DIR, find_run_id_for, load_run_summaries, mtime_dt
 from utils.logger import get_logger
 
@@ -197,6 +204,11 @@ class FollowUpManager:
 
         history = conversation_store.recent_turns(session, FOLLOW_UP_PROMPT_HISTORY_MESSAGES)
 
+        # Reuses the EXISTING, already-public read function - None (not an
+        # error) when "Investigate Logs" has never been clicked for this
+        # investigation. No AWS call, no re-fetch, no re-sanitization.
+        log_investigation = log_investigation_store.load_result(investigation_id)
+
         prompt = FollowUpPromptBuilder().build_prompt(
             report=report,
             raw_context=raw_context,
@@ -206,6 +218,7 @@ class FollowUpManager:
             time_window=time_window,
             conversation_history=history,
             question=question,
+            log_investigation=log_investigation,
         )
 
         # -----------------------------------------------------------

@@ -44,25 +44,9 @@ from config.settings import FOLLOW_UP_TIMELINE_MAX_EVENTS
 # through it completely unchanged.
 _CLOUDTRAIL_TIMELINE_FIELDS = ("event_time", "event_name", "service", "error_code")
 
-# prompt_key -> the human label used in the TIMELINE's "Metric Extremes"
-# section, for every trend-shaped metric any resource type's sanitized
-# context might carry (EC2, first-class ALB, first-class ASG - see
-# llm/sanitizer.py's sanitize_cloudwatch/sanitize_load_balancer/
-# sanitize_auto_scaling_group for the exact source of each).
-_TREND_METRIC_LABELS = {
-    "cpu": "CPU Utilization",
-    "memory": "Memory Utilization",
-    "disk": "Disk Utilization",
-    "network_in": "Network In",
-    "network_out": "Network Out",
-    "request_count": "Request Count",
-    "target_response_time": "Target Response Time",
-    "http_4xx": "HTTP 4XX Count",
-    "http_5xx": "HTTP 5XX Count",
-    "desired_capacity": "Desired Capacity",
-    "in_service_instances": "In-Service Instances",
-    "pending_instances": "Pending Instances",
-}
+# (issue #5) _TREND_METRIC_LABELS was removed along with the metric_extremes
+# TIMELINE subsection it fed - that section duplicated data already in
+# EVIDENCE; the label map is no longer referenced anywhere.
 
 
 class FollowUpPromptBuilder:
@@ -101,66 +85,14 @@ class FollowUpPromptBuilder:
 
         return extracted
 
-    @staticmethod
-    def _metric_extremes(trend: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """First/last/min/max of one metric's H array, plus its unit and
-        (only when AWS actually has one configured) alarm threshold -
-        every value read directly off H, nothing computed beyond
-        min()/max()/indexing."""
-        history = trend.get("H") or []
-        if not history:
-            return None
-
-        values = [point[1] for point in history if isinstance(point, (list, tuple)) and len(point) == 2]
-        if not values:
-            return None
-
-        min_point = min(history, key=lambda p: p[1])
-        max_point = max(history, key=lambda p: p[1])
-
-        result = {
-            "unit": trend.get("U"),
-            "first": {"timestamp": history[0][0], "value": history[0][1]},
-            "last": {"timestamp": history[-1][0], "value": history[-1][1]},
-            "min": {"timestamp": min_point[0], "value": min_point[1]},
-            "max": {"timestamp": max_point[0], "value": max_point[1]},
-        }
-
-        threshold = trend.get("TH")
-        if threshold:
-            result["configured_alarm_threshold"] = threshold
-
-        return result
-
-    def _metric_timeline(self, sanitized_context: Dict[str, Any]) -> Dict[str, Any]:
-        """Extremes for every trend-shaped metric present in the
-        sanitized context, regardless of resource type - EC2's
-        "cloudwatch" sub-block, or a first-class Load Balancer/Auto
-        Scaling Group context's own top-level metric keys."""
-        data = sanitized_context.get("context") or {}
-
-        candidates: Dict[str, Any] = {}
-        cloudwatch = data.get("cloudwatch")
-        if isinstance(cloudwatch, dict):
-            candidates.update({k: v for k, v in cloudwatch.items() if isinstance(v, dict) and "H" in v})
-
-        metrics = data.get("metrics")
-        if isinstance(metrics, dict):
-            candidates.update({k: v for k, v in metrics.items() if isinstance(v, dict) and "H" in v})
-
-        for key in ("desired_capacity", "in_service_instances", "pending_instances"):
-            value = data.get(key)
-            if isinstance(value, dict) and "H" in value:
-                candidates[key] = value
-
-        extremes = {}
-        for prompt_key, trend in candidates.items():
-            summary = self._metric_extremes(trend)
-            if summary:
-                extremes[_TREND_METRIC_LABELS.get(prompt_key, prompt_key)] = summary
-
-        return extremes
-
+    # NOTE (issue #5): the old "Metric Extremes" TIMELINE subsection is
+    # REMOVED. It derived min/max/first/last directly from the very same
+    # sanitized context that already ships verbatim in the EVIDENCE
+    # section below, so it was pure token duplication on every single
+    # question. CloudTrail events below are NOT duplicated (the sanitized
+    # context strips event_time, which _cloudtrail_timeline re-adds for
+    # reasoning), so the CloudTrail half of TIMELINE stays.
+    #
     # =====================================================
     # Log Investigation awareness - reads an ALREADY-PERSISTED,
     # ALREADY-SANITIZED result (see utils/log_investigation_store.py /
@@ -201,7 +133,7 @@ class FollowUpPromptBuilder:
     # Prompt assembly
     # =====================================================
 
-    def build_prompt(
+    def build_evidence_block(
         self,
         report: Dict[str, Any],
         raw_context: Dict[str, Any],
@@ -209,26 +141,30 @@ class FollowUpPromptBuilder:
         resource_id: str,
         resource_type: Optional[str],
         time_window: Optional[Dict[str, Optional[str]]],
-        conversation_history: List[Dict[str, Any]],
-        question: str,
         log_investigation: Optional[Dict[str, Any]] = None,
     ) -> str:
+        """The IMMUTABLE-per-investigation portion of the follow-up prompt:
+        grounding instructions + the RCA + the sanitized evidence + the
+        CloudTrail timeline. Contains NO conversation history and NO user
+        question, so it can be built/sanitized ONCE per investigation and
+        reused for every follow-up question (issue #5) - and, on a paid
+        Google AI tier, handed to Gemini's cached_contents so the evidence
+        tokens are paid once, not once per question.
+
+        call sanitize() exactly once here. The per-question prompt
+        (build_turn_prompt) reuses this block verbatim and never
+        re-sanitizes."""
 
         sanitized_context = self.sanitizer.sanitize(raw_context)
         log_investigation_summary = self._log_investigation_summary(log_investigation)
 
+        # Only cloudtrail_events now - the metric_extremes half duplicated
+        # data already in sanitized_context (see the NOTE above).
         timeline = {
             "cloudtrail_events": self._cloudtrail_timeline(raw_context),
-            "metric_extremes": self._metric_timeline(sanitized_context),
         }
 
-        conversation_block = [
-            {"role": turn.get("role"), "content": turn.get("content")}
-            for turn in conversation_history
-            if turn.get("role") and turn.get("content")
-        ]
-
-        prompt = f"""
+        return f"""
 You are the AegisOps SRE investigation assistant.
 
 You are answering a follow-up question about an existing AWS
@@ -337,11 +273,58 @@ TIMELINE
 
 EVIDENCE
 {json.dumps(sanitized_context.get("context") or {}, separators=(",", ":"))}
+"""
 
+    def build_turn_prompt(
+        self,
+        conversation_history: List[Dict[str, Any]],
+        question: str,
+    ) -> str:
+        """The per-question portion: only the recent conversation and the
+        question itself. Sent alongside the evidence block either as the
+        mutable contents of a cached-content call (the block is the cache)
+        or appended after it (see build_prompt). Never re-sanitizes and
+        never re-reads the investigation - it only formats what is already
+        in memory."""
+
+        conversation_block = [
+            {"role": turn.get("role"), "content": turn.get("content")}
+            for turn in conversation_history
+            if turn.get("role") and turn.get("content")
+        ]
+
+        return f"""
 CONVERSATION
 {json.dumps(conversation_block, separators=(",", ":"))}
 
 USER QUESTION
 {question}
 """
-        return prompt
+
+    def build_prompt(
+        self,
+        report: Dict[str, Any],
+        raw_context: Dict[str, Any],
+        run_id: str,
+        resource_id: str,
+        resource_type: Optional[str],
+        time_window: Optional[Dict[str, Optional[str]]],
+        conversation_history: List[Dict[str, Any]],
+        question: str,
+        log_investigation: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Single-string prompt for the UNCACHED fallback path. Equals
+        build_evidence_block(...) + build_turn_prompt(...) so the uncached
+        and cached paths send Gemini byte-identical content (minus the
+        removed metric_extremes duplication) - a cached and uncached answer
+        for the same question are grounded in exactly the same evidence."""
+
+        return self.build_evidence_block(
+            report=report,
+            raw_context=raw_context,
+            run_id=run_id,
+            resource_id=resource_id,
+            resource_type=resource_type,
+            time_window=time_window,
+            log_investigation=log_investigation,
+        ) + self.build_turn_prompt(conversation_history, question)

@@ -90,6 +90,37 @@ FOLLOW_UP_MAX_QUESTION_LENGTH = 2000
 # collected.
 FOLLOW_UP_TIMELINE_MAX_EVENTS = 20
 
+# --- Follow-up response caching (issue #5) ---------------------------------
+# Master switch for serving a follow-up answer from a local memo instead of
+# calling Gemini again. Actual reuse happens only when the question is
+# identical (case/whitespace-normalized) for the same investigation AND the
+# evidence fingerprint is unchanged - a memo from different evidence is never
+# served as if it were a fresh answer. Response caching is free-tier safe:
+# unlike Gemini server-side context caching (storage quota 0 on free tier),
+# this is a local dict/JSON memo that costs no API storage.
+FOLLOW_UP_RESPONSE_CACHE_ENABLED = True
+
+# --- Gemini server-side context caching (issue #5, paid tier only) ---------
+# Server-side cached_contents storage is a PAID-tier feature - on the Google
+# AI free tier the storage quota is 0 (live-confirmed; caches.create returns
+# 429 TotalCachedContentStorageTokensPerModelFreeTier limit=0). Default OFF.
+# Flip to True once the account/key is on Pay-as-you-go or Vertex. When ON,
+# the immutable evidence block is cached once per investigation (TTL below)
+# and each question sends only the cache reference + conversation + question.
+FOLLOW_UP_GEMINI_CACHE_ENABLED = False
+
+# Minimum evidence-block size to bother caching - Gemini rejects
+# cached_contents.create below 1024 tokens (min_total_token_count). The
+# manager estimates tokens and skips the cache attempt below this; the
+# prompt is still answered uncached.
+FOLLOW_UP_GEMINI_CACHE_MIN_TOKENS = 1024
+
+# Sliding TTL for a follow-up evidence cache. Re-Created whenever a question
+# arrives on an expired/deleted cache, so a cached conversation effectively
+# never dies mid-conversation; it only evaporates when the user simply stops
+# asking questions for this long.
+FOLLOW_UP_GEMINI_CACHE_TTL_SECONDS = 3600
+
 # =========================================================
 # Log Investigation Configuration
 # =========================================================

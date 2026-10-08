@@ -34,6 +34,8 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from utils.path_safety import validate_file_id
+
 LOG_INVESTIGATIONS_DIR = Path("output/log_investigations")
 
 _locks_guard = threading.Lock()
@@ -50,8 +52,9 @@ def _lock_for(investigation_id: str) -> threading.Lock:
 
 
 def _path_for(investigation_id: str) -> Path:
+    # Defense in depth - see utils/conversation_store.py::_path_for.
     LOG_INVESTIGATIONS_DIR.mkdir(parents=True, exist_ok=True)
-    return LOG_INVESTIGATIONS_DIR / f"{investigation_id}.json"
+    return LOG_INVESTIGATIONS_DIR / f"{validate_file_id(investigation_id, 'investigation_id')}.json"
 
 
 def _atomic_write(path: Path, data: dict) -> None:
@@ -66,8 +69,13 @@ def _atomic_write(path: Path, data: dict) -> None:
 
 def load_result(investigation_id: str) -> Optional[Dict[str, Any]]:
     """None when this investigation has never had a Log Investigation run
-    - a valid, honest "not yet investigated" state, not an error."""
-    path = _path_for(investigation_id)
+    - a valid, honest "not yet investigated" state, not an error. A
+    structurally invalid investigation_id (rejected by validate_file_id)
+    also yields None - see conversation_store.load_session."""
+    try:
+        path = _path_for(investigation_id)
+    except ValueError:
+        return None
     if not path.exists():
         return None
     try:

@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+from utils.path_safety import validate_file_id
+
 
 class ReportWriter:
 
@@ -11,7 +13,7 @@ class ReportWriter:
 
     def save(self, instance_id, report):
 
-        file_path = self.output_dir / f"{instance_id}.json"
+        file_path = self.output_dir / f"{validate_file_id(instance_id, 'resource_id')}.json"
 
         with open(file_path, "w") as f:
             json.dump(report, f, indent=4)

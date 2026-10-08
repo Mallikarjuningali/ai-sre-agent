@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from config.settings import FOLLOW_UP_MAX_CONVERSATION_MESSAGES
+from utils.path_safety import validate_file_id
 
 CONVERSATIONS_DIR = Path("output/conversations")
 
@@ -50,8 +51,11 @@ def _lock_for(investigation_id: str) -> threading.Lock:
 
 
 def _path_for(investigation_id: str) -> Path:
+    # Defense in depth: the managers reject malformed/attacker-controlled
+    # IDs before they reach the store, but the store is the last line of
+    # defense before a string becomes a filesystem path (issue #1).
     CONVERSATIONS_DIR.mkdir(parents=True, exist_ok=True)
-    return CONVERSATIONS_DIR / f"{investigation_id}.json"
+    return CONVERSATIONS_DIR / f"{validate_file_id(investigation_id, 'investigation_id')}.json"
 
 
 def _atomic_write(path: Path, data: dict) -> None:
@@ -67,8 +71,13 @@ def _atomic_write(path: Path, data: dict) -> None:
 def load_session(investigation_id: str) -> Optional[Dict[str, Any]]:
     """None when no conversation has ever been started for this
     investigation - a valid, honest "no history yet" state, not an
-    error."""
-    path = _path_for(investigation_id)
+    error. A structurally invalid investigation_id (rejected by
+    validate_file_id) also yields None - a load of a file that could
+    never legitimately exist has nothing to return."""
+    try:
+        path = _path_for(investigation_id)
+    except ValueError:
+        return None
     if not path.exists():
         return None
     try:

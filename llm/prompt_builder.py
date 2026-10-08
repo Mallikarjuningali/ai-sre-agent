@@ -13,6 +13,7 @@ Prepare AI prompts from infrastructure context.
 import json
 from pathlib import Path
 from llm.sanitizer import Sanitizer
+from utils.path_safety import validate_file_id
 
 # output/prompts/ is a live debugging directory, not investigation history
 # (that's what output/archive/<run_id>/prompts/ is for) - capped at the
@@ -144,7 +145,7 @@ Infrastructure Context:
         LLMEngine.analyze() next, byte-for-byte - no reformatting, no
         regeneration. Never affects what's actually sent to Gemini."""
 
-        file_path = self.prompt_directory / f"{resource_id}.txt"
+        file_path = self.prompt_directory / f"{validate_file_id(resource_id, 'resource_id')}.txt"
 
         with open(
             file_path,

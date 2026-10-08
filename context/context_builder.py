@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 from zoneinfo import ZoneInfo
 
+from utils.path_safety import validate_file_id
+
 # =========================================================
 # Configure Logger
 # =========================================================
@@ -641,7 +643,7 @@ class ContextBuilder:
 
             file_path = (
                 self.context_directory /
-                f"{instance_id}.json"
+                f"{validate_file_id(instance_id, 'resource_id')}.json"
             )
 
             with open(

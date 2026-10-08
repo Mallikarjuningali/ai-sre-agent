@@ -50,6 +50,7 @@ from utils import log_investigation_store
 from utils.dashboard_export import CONTEXT_DIR, REPORTS_DIR, find_run_id_for, load_run_summaries, mtime_dt
 from utils.incident_window import resolve_analysis_window
 from utils.logger import get_logger
+from utils.path_safety import validate_file_id
 
 logger = get_logger("LogInvestigationManager")
 
@@ -81,11 +82,22 @@ class LogInvestigationUnavailableError(Exception):
 
 
 def _split_investigation_id(investigation_id: str):
+    """Splits f"{run_id}__{resource_id}" AND validates every half for
+    filesystem safety (issue #1) - mirrors
+    api/follow_up_manager.py::_split_investigation_id; a shape-only check
+    admits traversal strings like "run__../../x" that would otherwise be
+    joined into output/reports/ and output/log_investigations/ paths."""
     if not investigation_id or "__" not in investigation_id:
         raise LogInvestigationNotFoundError(f"Malformed investigation_id: {investigation_id!r}")
     run_id, _, resource_id = investigation_id.rpartition("__")
     if not run_id or not resource_id:
         raise LogInvestigationNotFoundError(f"Malformed investigation_id: {investigation_id!r}")
+    try:
+        validate_file_id(run_id, "run_id")
+        validate_file_id(resource_id, "resource_id")
+        validate_file_id(investigation_id, "investigation_id")
+    except ValueError as exc:
+        raise LogInvestigationNotFoundError(f"Malformed investigation_id: {exc}") from exc
     return run_id, resource_id
 
 

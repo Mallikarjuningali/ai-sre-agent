@@ -4,7 +4,7 @@
   "s3_bucket": "",
   "s3_prefix": "aegisops/",
   "aws_region": "us-east-1",
-  "rest_base_url": "http://54.165.108.236:8000",
+  "rest_base_url": "http://13.217.82.101:8000",
   "rest_api_key": "",
   "theme": "dark",
   "refresh_interval_seconds": 30

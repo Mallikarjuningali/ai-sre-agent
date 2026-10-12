@@ -8,6 +8,7 @@ for real, with CostExplorerManager's own AWS/Gemini calls mocked at the
 collector/LLM boundary (never boto3/Gemini directly).
 """
 import json
+import os
 import shutil
 import sys
 import types
@@ -36,15 +37,30 @@ sys.modules["api.investigation_manager"] = _stub
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from api.auth import API_KEY_ENV_VAR  # noqa: E402
+
 import api.app as app_mod  # noqa: E402
 import utils.cost_dashboard_export as export_mod  # noqa: E402
+
+# Issue #2 added app-wide API-key auth - every test client in this module
+# authenticates with this key (set as the server env var in setUp). What a
+# request WITHOUT the key gets (401) is the security suite's job:
+# tests/security/test_api_authentication.py.
+TEST_API_KEY = "cost-explorer-test-key"
+
+
+def _authenticated_client() -> TestClient:
+    client = TestClient(app_mod.app)
+    client.headers["Authorization"] = f"Bearer {TEST_API_KEY}"
+    return client
 
 
 class TestCostExplorerFeedRoutes(unittest.TestCase):
     """GET/HEAD /cost-explorer/* - pure passthroughs of dashboard_feed/*.json."""
 
     def setUp(self):
-        self.client = TestClient(app_mod.app)
+        os.environ[API_KEY_ENV_VAR] = TEST_API_KEY
+        self.client = _authenticated_client()
         self._orig_feed_dir = app_mod.COST_FEED_DIR
         self.tmp_feed_dir = Path("output/cost/_test_api_feed")
         shutil.rmtree(self.tmp_feed_dir, ignore_errors=True)
@@ -110,7 +126,8 @@ class TestCostExplorerRefreshRoute(unittest.TestCase):
     thread exercised but every AWS/Gemini boundary mocked."""
 
     def setUp(self):
-        self.client = TestClient(app_mod.app)
+        os.environ[API_KEY_ENV_VAR] = TEST_API_KEY
+        self.client = _authenticated_client()
         # Fresh manager per test so busy-state/run history from one test
         # never leaks into the next.
         self._orig_manager = app_mod.cost_manager

@@ -33,14 +33,24 @@ Purpose:
 =========================================================
 """
 
+import hashlib
 import json
+import re
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from config.settings import FOLLOW_UP_MAX_QUESTION_LENGTH, FOLLOW_UP_PROMPT_HISTORY_MESSAGES
+from config.settings import (
+    FOLLOW_UP_GEMINI_CACHE_ENABLED,
+    FOLLOW_UP_GEMINI_CACHE_MIN_TOKENS,
+    FOLLOW_UP_GEMINI_CACHE_TTL_SECONDS,
+    FOLLOW_UP_MAX_QUESTION_LENGTH,
+    FOLLOW_UP_PROMPT_HISTORY_MESSAGES,
+    FOLLOW_UP_RESPONSE_CACHE_ENABLED,
+    GEMINI_MODEL,
+)
 from llm.follow_up_prompt_builder import FollowUpPromptBuilder
 from llm.llm_engine import LLMEngine
 from utils import conversation_store, log_investigation_store
@@ -113,6 +123,33 @@ def _time_window_for(run_id: str) -> Optional[Dict[str, Optional[str]]]:
     return {"start": data.get("start_time"), "end": data.get("end_time")}
 
 
+def _normalize_question(question: str) -> str:
+    """Case/whitespace-insensitive key for the response memo, so "What
+    happened?" and "  what happened " map to the same entry."""
+    return re.sub(r"\s+", " ", question.strip().lower())
+
+
+def _evidence_fingerprint(*parts) -> str:
+    """Stable fingerprint of the evidence an answer was grounded in. A stored
+    memo/cache is only reused while this is unchanged - so running a Log
+    Investigation later (which changes its part) automatically stales prior
+    memos instead of serving evidence that no longer matches."""
+    h = hashlib.sha256()
+    for part in parts:
+        h.update(json.dumps(part, sort_keys=True, default=str).encode("utf-8"))
+        h.update(b"\x00")
+    return h.hexdigest()
+
+
+def _estimate_tokens(text: str) -> int:
+    """Rough token estimate (~4 chars/token) used only to decide whether the
+    evidence block clears Gemini's 1024-token caching floor. Deliberately
+    approximate - the exact count is Gemini's, and a wrong-by-a-bit estimate
+    only flips between 'skip the cache attempt' and 'attempt + gracefully
+    fall back', both safe."""
+    return max(1, len(text) // 4)
+
+
 def _parse_response(raw_response: str) -> Dict[str, Any]:
     """Parses Gemini's JSON response into the follow-up schema. Never
     crashes on a malformed response - falls back to a friendly, honest
@@ -159,6 +196,10 @@ def _parse_response(raw_response: str) -> Dict[str, Any]:
 
 class FollowUpManager:
 
+    def __init__(self):
+        # Reused across questions (issue #5) instead of rebuilt per question.
+        self._engine: Optional[LLMEngine] = None
+
     def ask(self, investigation_id: str, question: str) -> Dict[str, Any]:
         question = (question or "").strip()
         if not question:
@@ -167,6 +208,11 @@ class FollowUpManager:
             raise InvalidQuestionError(
                 f"Question is too long ({len(question)} characters, max {FOLLOW_UP_MAX_QUESTION_LENGTH})."
             )
+
+        # One engine per process, lazily created and reused across questions
+        # (issue #5) - the old code built a new genai.Client per question.
+        if self._engine is None:
+            self._engine = LLMEngine()
 
         run_id, resource_id = _split_investigation_id(investigation_id)
 
@@ -222,42 +268,73 @@ class FollowUpManager:
         # investigation. No AWS call, no re-fetch, no re-sanitization.
         log_investigation = log_investigation_store.load_result(investigation_id)
 
-        prompt = FollowUpPromptBuilder().build_prompt(
+        # --- Response memo (issue #5, free-tier saving) -------------------
+        # Identical, evidence-unchanged questions are answered from a local
+        # memo instead of spending another Gemini call. The fingerprint is
+        # derived from the evidence sources (report + context + log
+        # investigation), so a memo is only ever reused while the evidence
+        # it was produced from is unchanged - if a Log Investigation is run
+        # later, the fingerprint changes and stales memos are ignored.
+        builder = FollowUpPromptBuilder()
+        evidence_fingerprint = _evidence_fingerprint(report, raw_context, log_investigation)
+        memo_key = _normalize_question(question)
+        memos = session.setdefault("response_memo", {})
+
+        if FOLLOW_UP_RESPONSE_CACHE_ENABLED:
+            hit = memos.get(memo_key)
+            if hit and hit.get("fingerprint") == evidence_fingerprint:
+                logger.info(
+                    f"follow_up investigation_id={investigation_id} memo=hit "
+                    f"(identical question, evidence unchanged) - no Gemini call"
+                )
+                cached = hit["response"]
+                return {
+                    "investigation_id": investigation_id,
+                    "question": question,
+                    "answer": cached["answer"],
+                    "confidence": cached["confidence"],
+                    "evidence_used": cached["evidence_used"],
+                    "uncertainties": cached["uncertainties"],
+                    "follow_up_needed": cached["follow_up_needed"],
+                    "from_cache": True,
+                }
+
+        # --- Immutable evidence block (issue #5) --------------------------
+        # Build + sanitize ONCE. The per-question prompt is just the recent
+        # conversation + the question - no re-sanitize, no re-derive.
+        evidence_block = builder.build_evidence_block(
             report=report,
             raw_context=raw_context,
             run_id=run_id,
             resource_id=resource_id,
             resource_type=resource_type,
             time_window=time_window,
-            conversation_history=history,
-            question=question,
             log_investigation=log_investigation,
         )
+        turn_prompt = builder.build_turn_prompt(history, question)
 
-        # -----------------------------------------------------------
-        # Phase 2 seam (not implemented): an "is evidence sufficient?"
-        # check would run here, before the Gemini call, and could
-        # short-circuit straight to an "evidence insufficient" answer
-        # without spending a Gemini call at all. Phase 3 would extend
-        # this same point to plan/execute an approved tool (via a future
-        # ToolRegistry/ToolExecutor - never eval()/exec()/shell) and
-        # re-enter with new evidence before calling Gemini. Neither
-        # exists yet - every follow-up in this phase goes straight to
-        # Gemini with the evidence already assembled above.
-        # -----------------------------------------------------------
-
-        started = time.monotonic()
-        try:
-            raw_response = LLMEngine().analyze(prompt)
-        except Exception as exc:
-            logger.error(f"Follow-up Gemini call failed for investigation_id={investigation_id}: {exc}")
-            raise FollowUpUnavailableError(
-                "The investigation data is available, but the AI follow-up analysis is "
-                "temporarily unavailable. Please try again."
-            ) from exc
-        gemini_latency_seconds = time.monotonic() - started
+        raw_response = self._generate(
+            investigation_id=investigation_id,
+            session=session,
+            evidence_block=evidence_block,
+            turn_prompt=turn_prompt,
+        )
 
         answer = _parse_response(raw_response)
+
+        # Persist the memo after a real (parsed) answer so a later identical
+        # question on unchanged evidence is served locally.
+        if answer["parsed"]:
+            memos[memo_key] = {
+                "fingerprint": evidence_fingerprint,
+                "response": {
+                    "answer": answer["answer"],
+                    "confidence": answer["confidence"],
+                    "evidence_used": answer["evidence_used"],
+                    "uncertainties": answer["uncertainties"],
+                    "follow_up_needed": answer["follow_up_needed"],
+                },
+            }
 
         now = datetime.now(timezone.utc).isoformat()
         user_message = {"message_id": str(uuid.uuid4()), "role": "user", "content": question, "timestamp": now}
@@ -272,10 +349,22 @@ class FollowUpManager:
 
         conversation_store.append_turn(investigation_id, user_message, assistant_message)
 
+        # Persist the response memo so an identical question survives a
+        # restart and a duplicate *in-flight* request doesn't double-spend.
+        # append_turn already wrote the session; this second write adds the
+        # (small) memo. Best-effort - a memo is a hint, not state.
+        if answer["parsed"]:
+            try:
+                conversation_store.update_fields(
+                    investigation_id, {"response_memo": memos}
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"could not persist response memo for {investigation_id}: {exc}")
+
         logger.info(
-            f"follow_up investigation_id={investigation_id} "
-            f"gemini_latency_seconds={gemini_latency_seconds:.2f} "
-            f"response_parsed={answer['parsed']} confidence={answer['confidence']}"
+            f"follow_up investigation_id={investigation_id} gen_source={self._last_gen_source} "
+            f"gemini_latency_seconds={self._last_gemini_latency:.2f} "
+            f"response_parsed={answer['parsed']} confidence={answer['confidence']} memo=miss"
         )
 
         return {
@@ -286,7 +375,99 @@ class FollowUpManager:
             "evidence_used": answer["evidence_used"],
             "uncertainties": answer["uncertainties"],
             "follow_up_needed": answer["follow_up_needed"],
+            "from_cache": False,
         }
+
+    # ------------------------------------------------------------------
+    # Generation path (issue #5)
+    # ------------------------------------------------------------------
+    def _generate(self, *, investigation_id, session, evidence_block, turn_prompt) -> str:
+        """Produce a raw Gemini response for this question. Uses a
+        server-side cached_contents block as the immutable evidence when
+        FOLLOW_UP_GEMINI_CACHE_ENABLED and the block is large enough
+        (>=FOLLOW_UP_GEMINI_CACHE_MIN_TOKENS); every cache failure (free
+        tier storage quota 0, expired/deleted cache, below the token floor)
+        degrades gracefully to the single uncached prompt, which sends
+        Gemini byte-identical content. Sets the observability attributes
+        _last_gemini_latency/_last_gen_source read by ask()."""
+
+        started = time.monotonic()
+        self._last_gemini_latency = 0.0
+        self._last_gen_source = "uncached"
+
+        try:
+            if FOLLOW_UP_GEMINI_CACHE_ENABLED:
+                raw = self._generate_cached(
+                    investigation_id=investigation_id,
+                    session=session,
+                    evidence_block=evidence_block,
+                    turn_prompt=turn_prompt,
+                )
+            else:
+                raw = self._engine.analyze(evidence_block + turn_prompt)
+        except Exception as exc:
+            logger.error(f"Follow-up Gemini call failed for investigation_id={investigation_id}: {exc}")
+            raise FollowUpUnavailableError(
+                "The investigation data is available, but the AI follow-up analysis is "
+                "temporarily unavailable. Please try again."
+            ) from exc
+        self._last_gemini_latency = time.monotonic() - started
+        return raw
+
+    def _generate_cached(self, *, investigation_id, session, evidence_block, turn_prompt) -> str:
+        """Paid-tier path: cache the evidence block once, then reference it
+        per question. Re-creates the cache on expiry/deletion mid-conversation
+        (sliding TTL - see FOLLOW_UP_GEMINI_CACHE_TTL_SECONDS) so a cached
+        conversation effectively never dies; it only evaporates when the user
+        stops asking. Falls back to uncached on ANY cache error so a question
+        is never dropped because caching misbehaved."""
+        if _estimate_tokens(evidence_block) < FOLLOW_UP_GEMINI_CACHE_MIN_TOKENS:
+            self._last_gen_source = "uncached_below_floor"
+            return self._engine.analyze(evidence_block + turn_prompt)
+
+        meta = session.get("cache_meta") or {}
+        cache_name = meta.get("name")
+
+        for attempt in (1, 2):
+            if cache_name is None:
+                try:
+                    cache = self._engine.create_cache(
+                        model=GEMINI_MODEL,
+                        contents=evidence_block,
+                        ttl_seconds=FOLLOW_UP_GEMINI_CACHE_TTL_SECONDS,
+                        display_name=f"followup-{investigation_id}",  # already path-validated
+                    )
+                    cache_name = cache.name
+                    session["cache_meta"] = {"name": cache_name}
+                    self._save_cache_meta(investigation_id, session)
+                except Exception as exc:  # free tier quota 0, network, etc.
+                    logger.warning(f"follow_up cache create failed ({exc}); using uncached prompt")
+                    self._last_gen_source = "uncached_create_failed"
+                    return self._engine.analyze(evidence_block + turn_prompt)
+            try:
+                raw = self._engine.analyze_with_cache(turn_prompt, cache_name)
+                self._last_gen_source = "cached" if attempt == 1 else "cached_recreated"
+                return raw
+            except Exception as exc:
+                logger.warning(f"follow_up cached call failed on attempt {attempt} ({exc})")
+                if attempt == 1:
+                    cache_name = None  # recreate once, then give up -> uncached
+                else:
+                    self._last_gen_source = "uncached_after_cache_errors"
+                    return self._engine.analyze(evidence_block + turn_prompt)
+
+        return self._engine.analyze(evidence_block + turn_prompt)
+
+    @staticmethod
+    def _save_cache_meta(investigation_id: str, session: Dict[str, Any]) -> None:
+        """Persist cache_meta alongside the session so a server restart can
+        reuse (or transparently recreate) the same cache instead of leaking a
+        new one per boot. Reuses the store's own atomic write + per-id lock.
+        Failures never break the question - cache_meta is a hint, not state."""
+        try:
+            conversation_store.update_fields(investigation_id, {"cache_meta": session.get("cache_meta")})
+        except Exception as exc:  # noqa: BLE001 - persistence is best-effort
+            logger.debug(f"could not persist cache_meta for {investigation_id}: {exc}")
 
     def get_conversation(self, investigation_id: str) -> Dict[str, Any]:
         _split_investigation_id(investigation_id)  # validates shape; raises if malformed

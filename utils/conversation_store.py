@@ -146,6 +146,25 @@ def append_turn(
         return session
 
 
+def update_fields(investigation_id: str, fields: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Merge auxiliary (non-conversation) fields into the stored session and
+    persist atomically, under the same per-investigation lock as every other
+    write. Used for issue #5's additive caches: the response memo (local,
+    free-tier) and the cache_meta (server-side cache reference, paid tier).
+    Never touches "conversation" - turn history is only ever mutated by
+    append_turn. Returns the updated session, or None if no session exists."""
+    with _lock_for(investigation_id):
+        session = load_session(investigation_id)
+        if session is None:
+            return None
+        for key, value in fields.items():
+            if key == "conversation":
+                raise ValueError("use append_turn() to mutate conversation")
+            session[key] = value
+        _atomic_write(_path_for(investigation_id), session)
+        return session
+
+
 def recent_turns(session: Dict[str, Any], limit: int) -> List[Dict[str, Any]]:
     """The last `limit` stored turns - what actually goes into a follow-up
     prompt, bounded independently of how long the full stored history

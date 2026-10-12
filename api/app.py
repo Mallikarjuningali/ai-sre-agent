@@ -24,11 +24,11 @@ Purpose:
     Reuses main.py's own Analyzer/collector entry points via
     InvestigationManager - no collection or analysis logic lives here.
 
-    No auth yet - the dashboard doesn't send an Authorization header while
-    the REST wiring is still being brought up end-to-end. Add API-key auth
-    (require_api_key style dependency, checked against an env var, applied
-    via FastAPI's `dependencies=`) once the dashboard is fully working over
-    REST and can be updated to send the token in the same change.
+    Auth: every route requires `Authorization: Bearer <key>` where the key
+    is the AEGISOPS_REST_API_KEY environment variable (see api/auth.py -
+    fail-closed: unset key means 503 for everything, never silently open).
+    The dashboard sends this header from its own rest_api_key config, so
+    set the same env var for both processes.
 
 Run (from the ai-sre-agent/ project root, same cwd main.py expects):
     uvicorn api.app:app --host 0.0.0.0 --port 8000
@@ -38,10 +38,11 @@ Run (from the ai-sre-agent/ project root, same cwd main.py expects):
 import json
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+from api.auth import require_api_key
 from api.investigation_manager import InvestigationBusyError, InvestigationManager
 from api.cost_explorer_manager import CostExplorerBusyError, CostExplorerManager
 from api.resource_discovery import discover_resources
@@ -63,7 +64,19 @@ from utils.dashboard_export import FEED_DIR, build_resources_json, load_current_
 from utils.cost_dashboard_export import FEED_DIR as COST_FEED_DIR
 from utils.execution_cleanup import delete_executions
 
-app = FastAPI(title="AI SRE Agent API")
+# dependencies=[require_api_key] applies the key check to EVERY route on
+# the app, including any added later - no per-route annotation to forget.
+# docs/openapi are disabled: this API has exactly one client (the
+# dashboard, see dashboard/services/CONTRACT.md), so the auto-generated
+# schema UI is pure attack-surface/information disclosure on a
+# 0.0.0.0-bound listener.
+app = FastAPI(
+    title="AI SRE Agent API",
+    dependencies=[Depends(require_api_key)],
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 
 manager = InvestigationManager()
 

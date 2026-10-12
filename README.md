@@ -760,7 +760,21 @@ Completed
 
 ## Option B — Live API + Dashboard (both pipelines, recommended)
 
-Start the FastAPI backend:
+### Authentication (required)
+
+Every API endpoint requires an API key. The server **fails closed**: if the key is not configured it refuses all requests with `503` rather than running unauthenticated, since the app binds `0.0.0.0` and exposes money-spending and destructive operations.
+
+Set the same `AEGISOPS_REST_API_KEY` environment variable for **both** the backend and the dashboard before starting them. The dashboard reads it via `dashboard/services/config.py` (env var `AEGISOPS_REST_API_KEY`, or set it on the Settings page), and sends it as `Authorization: Bearer <key>` on every request — no dashboard code change is needed.
+
+```bash
+# Generate a key once and add it to your .env (or export it in both shells)
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+# AEGISOPS_REST_API_KEY=<that value>
+```
+
+Unauthenticated requests get `401`; a missing server key gets `503`.
+
+### Start the FastAPI backend
 
 ```bash
 uvicorn api.app:app --host 0.0.0.0 --port 8000
@@ -772,7 +786,7 @@ In a separate terminal, start the dashboard:
 streamlit run dashboard/app.py
 ```
 
-Then, from the dashboard's Settings page, point the data source at the running API (or use local fixtures / S3 for read-only browsing without a live backend). From there you can launch Full or Single Resource investigations and Cost Explorer refreshes directly from the UI.
+Then, from the dashboard's Settings page, point the data source at the running API — paste the same key into **REST API key** if you haven't set the env var (or use local fixtures / S3 for read-only browsing without a live backend). From there you can launch Full or Single Resource investigations and Cost Explorer refreshes directly from the UI.
 
 ---
 
